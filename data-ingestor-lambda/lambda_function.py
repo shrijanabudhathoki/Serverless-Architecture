@@ -1,3 +1,4 @@
+# Data ingestor lambda function
 import boto3
 import csv
 import io
@@ -7,6 +8,7 @@ from datetime import datetime
 
 # -------- AWS Clients --------
 s3 = boto3.client("s3")
+eventbridge = boto3.client("events")
 
 # -------- Environment Variables --------
 BUCKET_NAME      = os.environ.get("BUCKET_NAME")
@@ -14,6 +16,7 @@ RAW_PREFIX       = os.environ.get("RAW_PREFIX", "raw/")
 PROCESSED_PREFIX = os.environ.get("PROCESSED_PREFIX", "processed/")
 REJECTED_PREFIX  = os.environ.get("REJECTED_PREFIX", "rejected/")
 MARKERS_PREFIX   = os.environ.get("MARKERS_PREFIX", "markers/")
+EVENT_BUS_NAME   = os.environ.get("EVENT_BUS_NAME")
 
 # -------- Validation Config --------
 RANGES = {
@@ -96,6 +99,28 @@ def csv_to_string(rows, fieldnames):
     writer.writerows(rows)
     return buf.getvalue().encode("utf-8")
 
+def send_event_to_eventbridge(event_type, detail, correlation_id):
+    """Send custom event to EventBridge for workflow orchestration"""
+    try:
+        response = eventbridge.put_events(
+            Entries=[
+                {
+                    'Source': 'health.data.ingestor',
+                    'DetailType': event_type,
+                    'Detail': json.dumps(detail),
+                    'EventBusName': EVENT_BUS_NAME
+                }
+            ]
+        )
+        log("INFO", "event_sent_to_eventbridge", 
+            correlation_id=correlation_id, 
+            event_type=event_type,
+            event_id=response['Entries'][0].get('EventId'))
+    except Exception as e:
+        log("ERROR", "failed_to_send_event", 
+            correlation_id=correlation_id, 
+            error=str(e))
+
 # -------- Lambda Handler --------
 def lambda_handler(event, context):
     """
@@ -112,6 +137,8 @@ def lambda_handler(event, context):
         log("ERROR", "invalid_event_format", event=event)
         return {"status": "failed", "reason": "invalid_event_format"}
 
+    results = []
+
     for rec in records:
         bucket = rec["s3"]["bucket"]["name"]
         key = rec["s3"]["object"]["key"]
@@ -124,10 +151,12 @@ def lambda_handler(event, context):
         mkey = marker_key(bucket, key, version_id)
         if object_exists(BUCKET_NAME, mkey):
             log("INFO", "already_processed", correlation_id=corr_id, marker=mkey)
+            results.append({"correlation_id": corr_id, "status": "skipped", "reason": "already_processed"})
             continue
 
         if not key.startswith(RAW_PREFIX):
             log("INFO", "skip_non_raw_prefix", correlation_id=corr_id)
+            results.append({"correlation_id": corr_id, "status": "skipped", "reason": "non_raw_prefix"})
             continue
 
         try:
@@ -185,8 +214,39 @@ def lambda_handler(event, context):
             log("INFO", "ingestion_completed", correlation_id=corr_id,
                 processed_key=processed_key, rejected_key=rejected_key, manifest_key=manifest_key)
 
+            # Send success event to EventBridge for orchestration
+            if valid_rows:  # Only trigger analysis if there are valid rows
+                event_detail = {
+                    "correlation_id": corr_id,
+                    "bucket": BUCKET_NAME,
+                    "processed_key": processed_key,
+                    "manifest_key": manifest_key,
+                    "counts": manifest["counts"],
+                    "status": "success"
+                }
+                send_event_to_eventbridge("Data Processing Complete", event_detail, corr_id)
+            
+            results.append({
+                "correlation_id": corr_id, 
+                "status": "success", 
+                "processed_key": processed_key,
+                "counts": manifest["counts"]
+            })
+
         except Exception as e:
             log("ERROR", "ingestion_failed", correlation_id=corr_id, error=str(e))
+            
+            # Send failure event to EventBridge
+            event_detail = {
+                "correlation_id": corr_id,
+                "bucket": bucket,
+                "source_key": key,
+                "status": "failed",
+                "error": str(e)
+            }
+            send_event_to_eventbridge("Data Processing Failed", event_detail, corr_id)
+            
+            results.append({"correlation_id": corr_id, "status": "failed", "error": str(e)})
             continue
 
-    return {"status": "ok"}
+    return {"status": "ok", "results": results}

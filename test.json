@@ -1,0 +1,8 @@
+[
+  {
+    "Source": "health.data.ingestor",
+    "DetailType": "Data Processing Complete",
+    "Detail": "{\"status\": \"success\", \"bucket\": \"health-data-bucket-shrijana\", \"processed_key\": \"processed/health_....csv\", \"correlation_id\": \"abc\"}",
+    "EventBusName": "health-data-processing-bus"
+  }
+]

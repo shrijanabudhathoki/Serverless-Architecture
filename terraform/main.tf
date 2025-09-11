@@ -36,9 +36,18 @@ resource "aws_dynamodb_table" "analysis_table" {
   }
 }
 
+# EventBridge Custom Bus for workflow orchestration
+resource "aws_cloudwatch_event_bus" "health_data_bus" {
+  name = "health-data-processing-bus"
+  
+  tags = {
+    Project = "Serverless Architecture"
+  }
+}
+
 # IAM Role and Policy for Lambda
 resource "aws_iam_role" "lambda_role" {
-  name = "lambda_s3_role"
+  name = "lambda_s3_eventbridge_role"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -50,7 +59,7 @@ resource "aws_iam_role" "lambda_role" {
 }
 
 resource "aws_iam_role_policy" "lambda_policy" {
-  name   = "lambda_s3_policy"
+  name   = "lambda_s3_eventbridge_policy"
   role   = aws_iam_role.lambda_role.id
   policy = jsonencode({
     Version = "2012-10-17"
@@ -58,7 +67,10 @@ resource "aws_iam_role_policy" "lambda_policy" {
       {
         Effect   = "Allow"
         Action   = ["s3:GetObject","s3:PutObject", "s3:ListBucket"]
-        Resource = ["arn:aws:s3:::health-data-bucket-shrijana/*"]
+        Resource = [
+          "arn:aws:s3:::health-data-bucket-shrijana",
+          "arn:aws:s3:::health-data-bucket-shrijana/*"
+        ]
       },
       {
         Effect   = "Allow"
@@ -77,6 +89,16 @@ resource "aws_iam_role_policy" "lambda_policy" {
           "bedrock:InvokeModelWithResponseStream"
         ]
         Resource = "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0"
+      },
+      {
+        Effect   = "Allow"
+        Action   = [
+          "events:PutEvents"
+        ]
+        Resource = [
+          aws_cloudwatch_event_bus.health_data_bus.arn,
+          "arn:aws:events:us-east-1:*:event-bus/default"
+        ]
       }
     ]
   })
@@ -95,6 +117,8 @@ resource "aws_lambda_function" "data_ingestor" {
   role             = aws_iam_role.lambda_role.arn
   handler          = "lambda_function.lambda_handler"
   runtime          = "python3.12"
+  timeout          = 60
+  source_code_hash = data.archive_file.ingestor_lambda_zip_archive.output_base64sha256
 
   environment {
     variables = {
@@ -102,18 +126,10 @@ resource "aws_lambda_function" "data_ingestor" {
       RAW_PREFIX  = "raw/"
       PROCESSED_PREFIX = "processed/"
       REJECTED_PREFIX = "rejected/"
-      MARKER_PREFIX = "markers/"
+      MARKERS_PREFIX = "markers/"
+      EVENT_BUS_NAME = aws_cloudwatch_event_bus.health_data_bus.name
     }
   }
-}
-
-# Permissions for S3 to invoke Lambda
-resource "aws_lambda_permission" "allow_s3" {
-  statement_id  = "AllowExecutionFromS3"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.data_ingestor.function_name
-  principal     = "s3.amazonaws.com"
-  source_arn    = aws_s3_bucket.input_bucket.arn
 }
 
 # Data analyzer Lambda Function
@@ -129,28 +145,42 @@ resource "aws_lambda_function" "data_analyzer" {
   role             = aws_iam_role.lambda_role.arn
   handler          = "lambda_function.lambda_handler"
   runtime          = "python3.12"
+  timeout          = 300
+  source_code_hash = data.archive_file.analyzer_lambda_zip_archive.output_base64sha256
 
   environment {
     variables = {
       BUCKET_NAME = aws_s3_bucket.input_bucket.bucket
       PROCESSED_PREFIX = "processed/"
       ANALYSIS_PREFIX = "analyzed/"
-      MARKER_PREFIX = "markers/"
+      MARKERS_PREFIX = "markers/"
       DDB_TABLE         = aws_dynamodb_table.analysis_table.name
-      BEDROCK_MODEL_ID  = "amazon.nova-lite-v1:0" 
+      BEDROCK_MODEL_ID  = "amazon.nova-lite-v1:0"
+      EVENT_BUS_NAME = aws_cloudwatch_event_bus.health_data_bus.name
     }
   }
 }
 
-# Permissions for S3 to invoke Lambda
-resource "aws_lambda_permission" "allow_s3_analyzer" {
-  statement_id  = "AllowExecutionFromS3Analyzer"
+# Permissions for S3 to invoke Data Ingestor Lambda
+resource "aws_lambda_permission" "allow_s3_ingestor" {
+  statement_id  = "AllowExecutionFromS3Ingestor"
   action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.data_analyzer.function_name
+  function_name = aws_lambda_function.data_ingestor.function_name
   principal     = "s3.amazonaws.com"
   source_arn    = aws_s3_bucket.input_bucket.arn
 }
 
+# Permissions for EventBridge to invoke Data Analyzer Lambda
+resource "aws_lambda_permission" "allow_eventbridge_analyzer" {
+  statement_id  = "AllowExecutionFromEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.data_analyzer.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.data_processed_rule.arn
+  depends_on = [aws_cloudwatch_event_rule.data_processed_rule]
+}
+
+# S3 bucket notification for raw data ingestion
 resource "aws_s3_bucket_notification" "bucket_notifications" {
   bucket = aws_s3_bucket.input_bucket.bucket
 
@@ -161,18 +191,86 @@ resource "aws_s3_bucket_notification" "bucket_notifications" {
     filter_suffix       = ".csv"
   }
 
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.data_analyzer.arn
-    events              = ["s3:ObjectCreated:*"]
-    filter_prefix       = "processed/"
-    filter_suffix       = ".csv"
-  }
-
   depends_on = [
     aws_lambda_function.data_ingestor,
-    aws_lambda_permission.allow_s3,
-    aws_lambda_function.data_analyzer,
-    aws_lambda_permission.allow_s3_analyzer
+    aws_lambda_permission.allow_s3_ingestor
   ]
 }
 
+# EventBridge Rule to trigger data analyzer when processing is complete
+resource "aws_cloudwatch_event_rule" "data_processed_rule" {
+  name           = "health-data-processed"
+  description    = "Trigger data analysis when data processing is complete"
+  event_bus_name = aws_cloudwatch_event_bus.health_data_bus.name
+
+  event_pattern = jsonencode({
+    source      = ["health.data.ingestor"]
+    detail-type = ["Data Processing Complete"]
+    detail = {
+      status = ["success"]
+    }
+  })
+}
+
+# EventBridge Target to invoke data analyzer Lambda
+resource "aws_cloudwatch_event_target" "analyzer_target" {
+  rule           = aws_cloudwatch_event_rule.data_processed_rule.name
+  event_bus_name = aws_cloudwatch_event_bus.health_data_bus.name
+  target_id      = "DataAnalyzerLambdaTarget"
+  arn            = aws_lambda_function.data_analyzer.arn
+
+  input_transformer {
+    input_paths = {
+      bucket = "$.detail.bucket"
+      key    = "$.detail.processed_key"
+      correlation_id = "$.detail.correlation_id"
+    }
+    input_template = <<TEMPLATE
+{
+  "bucket": "<bucket>",
+  "key": "<key>",
+  "correlation_id": "<correlation_id>",
+  "source": "eventbridge"
+}
+TEMPLATE
+
+
+  }
+  
+  depends_on = [
+    aws_lambda_function.data_analyzer,
+    aws_lambda_permission.allow_eventbridge_analyzer,
+    aws_cloudwatch_event_rule.data_processed_rule
+  ]
+}
+
+# EventBridge Rule to capture analysis completion events
+resource "aws_cloudwatch_event_rule" "analysis_complete_rule" {
+  name           = "health-data-analysis-complete"
+  description    = "Capture when data analysis is complete"
+  event_bus_name = aws_cloudwatch_event_bus.health_data_bus.name
+
+  event_pattern = jsonencode({
+    source      = ["health.data.analyzer"]
+    detail-type = ["Data Analysis Complete"]
+  })
+}
+
+# CloudWatch Log Group for EventBridge (optional but useful for debugging)
+resource "aws_cloudwatch_log_group" "eventbridge_logs" {
+  name              = "/aws/events/health-data-processing"
+  retention_in_days = 7
+}
+
+# Outputs for reference
+output "s3_bucket_name" {
+  value = aws_s3_bucket.input_bucket.bucket
+}
+
+output "eventbridge_bus_name" {
+  value = aws_cloudwatch_event_bus.health_data_bus.name
+}
+
+output "dynamodb_table_name" {
+  value = aws_dynamodb_table.analysis_table.name
+}
