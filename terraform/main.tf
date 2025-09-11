@@ -104,6 +104,38 @@ resource "aws_iam_role_policy" "lambda_policy" {
   })
 }
 
+resource "aws_iam_role_policy" "notifier_policy" {
+  name = "notifier_lambda_policy"
+  role = aws_iam_role.lambda_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = [
+          "ses:SendEmail",
+          "ses:SendRawEmail"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = [
+          "dynamodb:Scan",
+          "dynamodb:GetItem"
+        ]
+        Resource = aws_dynamodb_table.analysis_table.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup","logs:CreateLogStream","logs:PutLogEvents"]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+
 # Data ingestor Lambda Function
 data "archive_file" "ingestor_lambda_zip_archive" {
   type        = "zip"
@@ -160,6 +192,36 @@ resource "aws_lambda_function" "data_analyzer" {
     }
   }
 }
+
+# Notifier Lambda Function
+data "archive_file" "notifier_lambda_zip_archive" {
+  type        = "zip"
+  source_dir = "${path.module}/../notifier-lambda"
+  output_path = "${path.cwd}/../notifier-lambda/lambda_function.zip"  
+}
+
+resource "aws_lambda_function" "notifier_lambda" {
+  filename         = data.archive_file.notifier_lambda_zip_archive.output_path
+  function_name    = "health-notifier-lambda"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "lambda_function.lambda_handler"
+  runtime          = "python3.12"
+  timeout          = 60
+  source_code_hash = data.archive_file.notifier_lambda_zip_archive.output_base64sha256
+
+  environment {
+    variables = {
+      DDB_TABLE       = aws_dynamodb_table.analysis_table.name
+      SES_SENDER      = "shrijanabudhathoki51@gmail.com"
+      SES_RECIPIENTS  = "shrijanabudhathoki51@gmail.com"
+      BEDROCK_MODEL_ID = "amazon.nova-lite-v1:0"
+      BEDROCK_MAX_TOKENS = "500"
+    }
+  }
+
+  depends_on = [aws_iam_role_policy.notifier_policy]
+}
+
 
 # Permissions for S3 to invoke Data Ingestor Lambda
 resource "aws_lambda_permission" "allow_s3_ingestor" {
@@ -260,6 +322,36 @@ resource "aws_cloudwatch_event_rule" "analysis_complete_rule" {
 resource "aws_cloudwatch_log_group" "eventbridge_logs" {
   name              = "/aws/events/health-data-processing"
   retention_in_days = 7
+}
+
+resource "aws_cloudwatch_event_rule" "analysis_complete_notifier_rule" {
+  name           = "health-data-analysis-complete-notifier"
+  description    = "Trigger notifier Lambda when data analysis completes"
+  event_bus_name = aws_cloudwatch_event_bus.health_data_bus.name
+
+  event_pattern = jsonencode({
+    source      = ["health.data.analyzer"]
+    detail-type = ["Data Analysis Complete"]
+  })
+}
+
+resource "aws_cloudwatch_event_target" "notifier_target" {
+  rule           = aws_cloudwatch_event_rule.analysis_complete_notifier_rule.name
+  target_id      = "NotifierLambdaTarget"
+  arn            = aws_lambda_function.notifier_lambda.arn
+  event_bus_name = aws_cloudwatch_event_bus.health_data_bus.name
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_notifier" {
+  statement_id  = "AllowExecutionFromEventBridgeNotifier"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.notifier_lambda.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.analysis_complete_notifier_rule.arn
+}
+
+resource "aws_ses_email_identity" "notifier_email" {
+  email = "shrijanabudhathoki51@gmail.com"
 }
 
 # Outputs for reference
