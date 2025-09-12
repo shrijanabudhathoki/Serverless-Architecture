@@ -35,7 +35,7 @@ Anomalies: {json.dumps(anomalies)}
 Insights: {json.dumps(insights)}
 Recommendations: {json.dumps(recommendations)}
 
-Return a concise JSON object with a single key 'summary' and a textual summary.
+Return only a clear plain-text summary without JSON brackets or quotes.
 """
     try:
         response = bedrock.invoke_model(
@@ -49,11 +49,16 @@ Return a concise JSON object with a single key 'summary' and a textual summary.
         raw = response["body"].read()
         payload = json.loads(raw)
         output_text = payload["output"]["message"]["content"][0]["text"]
-        try:
-            summary = json.loads(output_text).get("summary", output_text)
-        except Exception:
-            summary = output_text
-        return summary
+
+        # Clean JSON-like wrappers if present
+        cleaned = output_text.strip()
+        if cleaned.startswith("{") and cleaned.endswith("}"):
+            try:
+                obj = json.loads(cleaned)
+                cleaned = obj.get("summary", cleaned)
+            except Exception:
+                pass
+        return cleaned
     except Exception as e:
         log("ERROR", "bedrock_summary_failed", error=str(e))
         return "Executive summary could not be generated."
@@ -69,7 +74,7 @@ def fetch_recent_analysis(correlation_id=None, limit=10):
     return response.get("Items", [])
 
 # -------- SES Email --------
-def send_email(subject, body_text):
+def send_email(subject, body_text, body_html):
     if not SES_SENDER or not SES_RECIPIENTS:
         log("ERROR", "SES_not_configured")
         return
@@ -79,8 +84,11 @@ def send_email(subject, body_text):
             Source=SES_SENDER,
             Destination={"ToAddresses": SES_RECIPIENTS},
             Message={
-                "Subject": {"Data": subject},
-                "Body": {"Text": {"Data": body_text}}
+                "Subject": {"Data": subject, "Charset": "UTF-8"},
+                "Body": {
+                    "Text": {"Data": body_text, "Charset": "UTF-8"},
+                    "Html": {"Data": body_html, "Charset": "UTF-8"},
+                },
             }
         )
         log("INFO", "email_sent", subject=subject)
@@ -99,30 +107,53 @@ def lambda_handler(event, context):
     # Aggregate row counts and anomalies
     total_rows = sum(item.get("records_analyzed", 0) for item in items)
     total_anomalies = sum(len(item.get("anomalies", [])) for item in items)
+
+    # Build anomaly frequency
     top_anomalies = {}
     for item in items:
         for anomaly in item.get("anomalies", []):
             key = anomaly.get("anomaly", "Unknown")
             top_anomalies[key] = top_anomalies.get(key, 0) + 1
 
-    # Optional: generate executive summary via Bedrock
+    # Convert anomalies into bullet points
+    anomalies_text = "\n".join([f"- {k}: {v}" for k, v in top_anomalies.items()]) or "None"
+
+    # Generate executive summary
     anomalies_list = [a.get("anomaly") for item in items for a in item.get("anomalies", [])]
     insights_list = [i for item in items for i in item.get("insights", [])]
     recommendations_list = [r for item in items for r in item.get("recommendations", [])]
 
     executive_summary = generate_summary(anomalies_list, insights_list, recommendations_list)
 
-    # Prepare email content
-    body = (
+    # Email content
+    subject = f"Health Data Analysis Report ({datetime.utcnow().date()})"
+
+    body_text = (
         f"Health Data Analysis Summary\n\n"
         f"Total Rows Processed: {total_rows}\n"
         f"Total Anomalies Detected: {total_anomalies}\n"
-        f"Top Anomalies: {json.dumps(top_anomalies, indent=2)}\n\n"
+        f"Top Anomalies:\n{anomalies_text}\n\n"
         f"Executive Summary:\n{executive_summary}\n"
     )
-    subject = f"Health Data Analysis Report ({datetime.utcnow().date()})"
+
+    body_html = f"""
+    <html>
+    <head></head>
+    <body>
+      <h2 style="color:#2E86C1;">Health Data Analysis Report</h2>
+      <p><b>Total Rows Processed:</b> {total_rows}</p>
+      <p><b>Total Anomalies Detected:</b> {total_anomalies}</p>
+      <h3 style="color:#C0392B;">Top Anomalies:</h3>
+      <ul>
+        {''.join(f"<li>{k}: {v}</li>" for k, v in top_anomalies.items()) or "<li>None</li>"}
+      </ul>
+      <h3 style="color:#117A65;">Executive Summary:</h3>
+      <p>{executive_summary}</p>
+    </body>
+    </html>
+    """
 
     # Send email
-    send_email(subject, body)
+    send_email(subject, body_text, body_html)
 
     return {"status": "success", "total_rows": total_rows, "total_anomalies": total_anomalies}
