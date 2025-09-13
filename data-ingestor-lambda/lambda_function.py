@@ -126,6 +126,9 @@ def lambda_handler(event, context):
     """
     Handles S3 events and optional manual/EventBridge events.
     """
+
+    # raise RuntimeError("Simulated ingestion failure for testing CloudWatch alarm")
+    
     # Determine if event is S3 notification or manual format
     if "Records" in event:
         records = event["Records"]

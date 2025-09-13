@@ -9,11 +9,12 @@ import os
 BUCKET_NAME = os.getenv("BUCKET_NAME", "health-data-bucket-shrijana")  # replace or export env var
 RAW_PREFIX  = "raw/"
 REGION      = os.getenv("AWS_REGION", "us-east-1")
+LOCAL_FILE  = "synthetic_health_data.csv"
 
 s3 = boto3.client("s3", region_name=REGION)
 
 # Generate synthetic health data for N users over T minutes
-def generate_health_data(num_users=5, num_records=50):
+def generate_health_data(num_users=10, num_records=1000):
     data = []
     start_time = datetime.utcnow()
 
@@ -41,7 +42,7 @@ def generate_health_data(num_users=5, num_records=50):
             data.append(record)
     return data
 
-def to_csv(data):
+def to_csv(data, local_file=None):
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=[
         "event_time","user_id","heart_rate","spo2",
@@ -50,7 +51,15 @@ def to_csv(data):
     writer.writeheader()
     for row in data:
         writer.writerow(row)
-    return buf.getvalue()
+
+    csv_content = buf.getvalue()
+
+    if local_file:
+        with open(local_file, "w", newline = "") as f:
+            f.write(csv_content)
+        print(f"Saved synthetic data to {local_file}")
+
+    return csv_content
 
 def upload_to_s3(data_csv):
     filename = f"health_{uuid.uuid4().hex}.csv"
@@ -66,6 +75,6 @@ def upload_to_s3(data_csv):
     return key
 
 if __name__ == "__main__":
-    dataset = generate_health_data(num_users=3, num_records=20)
-    csv_data = to_csv(dataset)
+    dataset = generate_health_data(num_users=10, num_records=100)
+    csv_data = to_csv(dataset, local_file=LOCAL_FILE)
     upload_to_s3(csv_data)

@@ -354,6 +354,68 @@ resource "aws_ses_email_identity" "notifier_email" {
   email = "shrijanabudhathoki51@gmail.com"
 }
 
+# SNS Topic for Notification
+resource "aws_sns_topic" "lambda_alerts" {
+  name = "LambdaFailureAlerts"
+}
+
+resource "aws_sns_topic_subscription" "email_subscription" {
+  topic_arn = aws_sns_topic.lambda_alerts.arn
+  protocol  = "email"
+  endpoint  = "shrijanabudhathoki51@gmail.com"
+}
+
+# Ingestor Lambda Errors
+resource "aws_cloudwatch_metric_alarm" "ingestor_failure_alarm" {
+  alarm_name          = "IngestorLambdaFailure"
+  alarm_description   = "Triggers when the ingestor Lambda fails"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "Errors"
+  namespace           = "AWS/Lambda"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_actions       = [aws_sns_topic.lambda_alerts.arn]
+  dimensions = {
+    FunctionName = aws_lambda_function.data_ingestor.function_name
+  }
+}
+
+# Analyzer Lambda Errors
+resource "aws_cloudwatch_metric_alarm" "analyzer_failure_alarm" {
+  alarm_name          = "AnalyzerLambdaFailure"
+  alarm_description   = "Triggers when the analyzer Lambda fails"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "Errors"
+  namespace           = "AWS/Lambda"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_actions       = [aws_sns_topic.lambda_alerts.arn]
+  dimensions = {
+    FunctionName = aws_lambda_function.data_analyzer.function_name
+  }
+}
+
+# Notifier Lambda Errors
+resource "aws_cloudwatch_metric_alarm" "notifier_failure_alarm" {
+  alarm_name          = "NotifierLambdaFailure"
+  alarm_description   = "Triggers when the notifier Lambda fails"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "Errors"
+  namespace           = "AWS/Lambda"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_actions       = [aws_sns_topic.lambda_alerts.arn]
+  dimensions = {
+    FunctionName = aws_lambda_function.notifier_lambda.function_name
+  }
+}
+
 # Outputs for reference
 output "s3_bucket_name" {
   value = aws_s3_bucket.input_bucket.bucket
