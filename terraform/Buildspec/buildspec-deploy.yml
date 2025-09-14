@@ -4,7 +4,10 @@ phases:
     commands:
       - echo "Installing Terraform..."
       - curl -fsSL https://releases.hashicorp.com/terraform/1.9.5/terraform_1.9.5_linux_amd64.zip -o terraform.zip
-      - unzip terraform.zip && mv terraform /usr/local/bin/ && terraform -version
+      - unzip -o terraform.zip -d /tmp/terraform_install
+      - mv /tmp/terraform_install/terraform /usr/local/bin/
+      - terraform -version
+      - rm -rf terraform.zip /tmp/terraform_install
   build:
     commands:
       - cd ..
