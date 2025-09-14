@@ -14,7 +14,7 @@ LOCAL_FILE  = "synthetic_health_data.csv"
 s3 = boto3.client("s3", region_name=REGION)
 
 # Generate synthetic health data for N users over T minutes
-def generate_health_data(num_users=10, num_records=1000):
+def generate_health_data(num_users=10, num_records=100):
     data = []
     start_time = datetime.utcnow()
 
