@@ -10,6 +10,7 @@ phases:
       - rm -rf terraform.zip /tmp/terraform_install
   build:
     commands:
-      - cd ..
+      - echo "Initializing Terraform..."
+      - cd terraform
       - terraform init -input=false
       - terraform apply -auto-approve
