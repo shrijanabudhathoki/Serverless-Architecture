@@ -21,118 +21,6 @@ def log(level, message, **kwargs):
     payload.update(kwargs)
     print(json.dumps(payload))
 
-# -------- Helper Functions --------
-def parse_json_summary(summary_text):
-    """Parse JSON summary and extract readable content"""
-    try:
-        # Try to parse as JSON
-        summary_data = json.loads(summary_text)
-        
-        # Extract insights, recommendations, and summary
-        insights = summary_data.get("insights", [])
-        recommendations = summary_data.get("recommendations", [])
-        main_summary = summary_data.get("summary", "")
-        
-        return insights, recommendations, main_summary
-    except json.JSONDecodeError:
-        # If it's not JSON, return as plain text
-        return [], [], summary_text
-
-def format_executive_summary(summaries):
-    """Format multiple summaries into a coherent executive summary"""
-    if not summaries:
-        return "No analysis data available."
-    
-    all_insights = []
-    all_recommendations = []
-    main_summaries = []
-    
-    for summary in summaries:
-        if not summary:
-            continue
-            
-        insights, recommendations, main_summary = parse_json_summary(summary)
-        all_insights.extend(insights)
-        all_recommendations.extend(recommendations)
-        if main_summary and main_summary != summary:
-            main_summaries.append(main_summary)
-    
-    # Build formatted summary
-    formatted_summary = ""
-    
-    if main_summaries:
-        formatted_summary += "Overall Health Status:\n"
-        for i, summary in enumerate(main_summaries, 1):
-            formatted_summary += f"{i}. {summary}\n"
-        formatted_summary += "\n"
-    
-    if all_insights:
-        formatted_summary += "Key Health Insights:\n"
-        for i, insight in enumerate(set(all_insights), 1):  # Remove duplicates
-            formatted_summary += f"• {insight}\n"
-        formatted_summary += "\n"
-    
-    if all_recommendations:
-        formatted_summary += "Recommended Actions:\n"
-        for i, rec in enumerate(set(all_recommendations), 1):  # Remove duplicates
-            formatted_summary += f"• {rec}\n"
-    
-    return formatted_summary if formatted_summary else "Analysis completed successfully."
-
-def format_insights_and_recommendations(items):
-    """Extract and format insights and recommendations from DynamoDB items"""
-    formatted_insights = []
-    formatted_recommendations = []
-    
-    for item in items:
-        log("DEBUG", "processing_item", item_keys=list(item.keys()))
-        
-        # Get insights - try different possible formats
-        insights = item.get("insights", [])
-        if isinstance(insights, str):
-            try:
-                insights = json.loads(insights)
-            except:
-                insights = [insights] if insights else []
-        
-        if insights and insights != ["No major trends observed"]:
-            formatted_insights.extend(insights)
-            log("DEBUG", "found_insights", count=len(insights))
-        
-        # Get recommendations - try different possible formats
-        recommendations = item.get("recommendations", [])  
-        if isinstance(recommendations, str):
-            try:
-                recommendations = json.loads(recommendations)
-            except:
-                recommendations = [recommendations] if recommendations else []
-                
-        if recommendations and recommendations != ["No recommendations"]:
-            formatted_recommendations.extend(recommendations)
-            log("DEBUG", "found_recommendations", count=len(recommendations))
-        
-        # Also try to parse from summary field
-        summary = item.get("summary", "")
-        if summary:
-            log("DEBUG", "parsing_summary", summary_length=len(summary))
-            insights_from_summary, recs_from_summary, _ = parse_json_summary(summary)
-            if insights_from_summary:
-                formatted_insights.extend(insights_from_summary)
-                log("DEBUG", "extracted_insights_from_summary", count=len(insights_from_summary))
-            if recs_from_summary:
-                formatted_recommendations.extend(recs_from_summary)
-                log("DEBUG", "extracted_recs_from_summary", count=len(recs_from_summary))
-    
-    # Remove duplicates while preserving order
-    unique_insights = list(dict.fromkeys(formatted_insights))
-    unique_recommendations = list(dict.fromkeys(formatted_recommendations))
-    
-    log("INFO", "insights_and_recs_processed", 
-        total_insights=len(unique_insights), 
-        total_recommendations=len(unique_recommendations))
-    
-    return unique_insights, unique_recommendations
-
 # -------- DynamoDB Retrieval --------
 def fetch_recent_analysis(correlation_id=None, limit=10):
     table = dynamodb.Table(DDB_TABLE)
@@ -140,19 +28,82 @@ def fetch_recent_analysis(correlation_id=None, limit=10):
     if correlation_id:
         scan_kwargs["FilterExpression"] = "correlation_id = :cid"
         scan_kwargs["ExpressionAttributeValues"] = {":cid": correlation_id}
+    
     response = table.scan(**scan_kwargs)
-    return response.get("Items", [])
+    items = response.get("Items", [])
+    
+    log("INFO", "fetched_items", 
+        count=len(items),
+        correlation_id=correlation_id,
+        sample_keys=list(items[0].keys()) if items else [])
+    
+    return items
+
+# -------- Helper Functions --------
+def extract_insights_and_recommendations(items):
+    """Extract insights and recommendations from DynamoDB items"""
+    all_insights = []
+    all_recommendations = []
+    
+    for item in items:
+        log("DEBUG", "processing_item", 
+            correlation_id=item.get("correlation_id", "unknown"),
+            has_insights=bool(item.get("insights")),
+            has_recommendations=bool(item.get("recommendations")))
+        
+        # Extract insights
+        insights = item.get("insights", [])
+        if insights and isinstance(insights, list) and insights != ["No major trends observed"]:
+            all_insights.extend(insights)
+            log("DEBUG", "added_insights", count=len(insights))
+        
+        # Extract recommendations  
+        recommendations = item.get("recommendations", [])
+        if recommendations and isinstance(recommendations, list) and recommendations != ["No recommendations"]:
+            all_recommendations.extend(recommendations)
+            log("DEBUG", "added_recommendations", count=len(recommendations))
+    
+    # Remove duplicates while preserving order
+    unique_insights = list(dict.fromkeys(all_insights))
+    unique_recommendations = list(dict.fromkeys(all_recommendations))
+    
+    log("INFO", "extracted_data", 
+        total_insights=len(unique_insights), 
+        total_recommendations=len(unique_recommendations))
+    
+    return unique_insights, unique_recommendations
+
+def format_executive_summary(items):
+    """Format executive summary from analysis summaries"""
+    summaries = []
+    
+    for item in items:
+        summary = item.get("summary", "")
+        if summary and summary != "Analysis completed.":
+            summaries.append(summary)
+    
+    if not summaries:
+        return "Health data analysis completed successfully. Regular monitoring continues."
+    
+    # Combine summaries into a coherent executive summary
+    combined_summary = " ".join(summaries)
+    
+    # If too long, take first summary
+    if len(combined_summary) > 500:
+        combined_summary = summaries[0] if summaries else "Analysis completed successfully."
+    
+    return combined_summary
 
 # -------- SES Email --------
 def send_email(subject, body_text, body_html):
     if not SES_SENDER or not SES_RECIPIENTS:
         log("ERROR", "SES_not_configured")
-        return
+        return False
 
     try:
         ses.send_email(
             Source=SES_SENDER,
-            Destination={"ToAddresses": SES_RECIPIENTS},
+            Destination={"ToAddresses": [r.strip() for r in SES_RECIPIENTS if r.strip()]},
             Message={
                 "Subject": {"Data": subject, "Charset": "UTF-8"},
                 "Body": {
@@ -161,9 +112,11 @@ def send_email(subject, body_text, body_html):
                 },
             }
         )
-        log("INFO", "email_sent", subject=subject)
+        log("INFO", "email_sent", subject=subject, recipients=len(SES_RECIPIENTS))
+        return True
     except Exception as e:
         log("ERROR", "email_failed", error=str(e))
+        return False
 
 # -------- Lambda Handler --------
 def lambda_handler(event, context):
@@ -172,7 +125,7 @@ def lambda_handler(event, context):
 
     if not items:
         log("INFO", "no_analysis_found", correlation_id=correlation_id)
-        return {"status": "no_data"}
+        return {"status": "no_data", "message": "No analysis data found"}
 
     # Aggregate row counts and anomalies
     total_rows = sum(item.get("records_analyzed", 0) for item in items)
@@ -188,24 +141,26 @@ def lambda_handler(event, context):
     # Sort anomalies by frequency (most common first)
     sorted_anomalies = sorted(top_anomalies.items(), key=lambda x: x[1], reverse=True)
 
-    # Extract and format insights and recommendations
-    formatted_insights, formatted_recommendations = format_insights_and_recommendations(items)
+    # Extract insights and recommendations
+    insights, recommendations = extract_insights_and_recommendations(items)
     
-    # Get summaries and format executive summary
-    summaries = [item.get("summary") for item in items if item.get("summary")]
-    executive_summary = format_executive_summary(summaries)
+    # Generate executive summary
+    executive_summary = format_executive_summary(items)
+
+    log("INFO", "email_data_prepared", 
+        total_rows=total_rows, 
+        total_anomalies=total_anomalies,
+        insights_count=len(insights),
+        recommendations_count=len(recommendations),
+        anomaly_types=len(sorted_anomalies))
 
     # Email content
     subject = f"Health Data Analysis Report - {datetime.utcnow().strftime('%B %d, %Y')}"
     
-    # Format anomalies for text version
+    # Format content for email
     anomalies_text = "\n".join([f"  • {anomaly}: {count} occurrences" for anomaly, count in sorted_anomalies[:10]]) or "  • No anomalies detected"
-    
-    # Format insights for text version
-    insights_text = "\n".join([f"  • {insight}" for insight in formatted_insights]) or "  • No significant trends identified"
-    
-    # Format recommendations for text version
-    recommendations_text = "\n".join([f"  • {rec}" for rec in formatted_recommendations]) or "  • Continue regular health monitoring"
+    insights_text = "\n".join([f"  • {insight}" for insight in insights[:10]]) or "  • Continuing to monitor health patterns"
+    recommendations_text = "\n".join([f"  • {rec}" for rec in recommendations[:10]]) or "  • Continue regular health monitoring"
 
     body_text = f"""Health Data Analysis Report
 Generated on: {datetime.utcnow().strftime('%B %d, %Y at %I:%M %p UTC')}
@@ -217,7 +172,7 @@ Total Anomalies Detected: {total_anomalies:,}
 === TOP HEALTH ANOMALIES ===
 {anomalies_text}
 
-=== KEY INSIGHTS ===
+=== KEY HEALTH INSIGHTS ===
 {insights_text}
 
 === RECOMMENDATIONS ===
@@ -236,9 +191,9 @@ If you have concerns about any anomalies, please consult with a healthcare profe
         for anomaly, count in sorted_anomalies[:10]
     ]) or "<tr><td colspan='2' style='text-align: center; color: #2ECC71;'>No anomalies detected</td></tr>"
 
-    insights_html = "".join([f"<li>{insight}</li>" for insight in formatted_insights]) or "<li style='color: #7F8C8D;'>No significant trends identified</li>"
+    insights_html = "".join([f"<li>{insight}</li>" for insight in insights[:10]]) or "<li style='color: #7F8C8D;'>Continuing to monitor health patterns</li>"
     
-    recommendations_html = "".join([f"<li>{rec}</li>" for rec in formatted_recommendations]) or "<li style='color: #7F8C8D;'>Continue regular health monitoring</li>"
+    recommendations_html = "".join([f"<li>{rec}</li>" for rec in recommendations[:10]]) or "<li style='color: #7F8C8D;'>Continue regular health monitoring</li>"
 
     # Format executive summary for HTML (preserve line breaks)
     executive_summary_html = executive_summary.replace('\n', '<br>')
@@ -423,11 +378,32 @@ If you have concerns about any anomalies, please consult with a healthcare profe
     </html>
     """
 
-    send_email(subject, body_text, body_html)
+    # Send email
+    email_sent = send_email(subject, body_text, body_html)
+    
+    if email_sent:
+        # Update notification status in DynamoDB
+        table = dynamodb.Table(DDB_TABLE)
+        for item in items:
+            try:
+                table.update_item(
+                    Key={"correlation_id": item["correlation_id"], "analysis_id": item["analysis_id"]},
+                    UpdateExpression="SET notification_sent = :sent, notification_timestamp = :ts",
+                    ExpressionAttributeValues={
+                        ":sent": True,
+                        ":ts": datetime.utcnow().isoformat() + "Z"
+                    }
+                )
+            except Exception as e:
+                log("WARN", "failed_to_update_notification_status", 
+                    correlation_id=item.get("correlation_id"), error=str(e))
 
     return {
-        "status": "success", 
-        "total_rows": total_rows, 
+        "status": "success" if email_sent else "failed",
+        "total_rows": total_rows,
         "total_anomalies": total_anomalies,
+        "insights_count": len(insights),
+        "recommendations_count": len(recommendations),
+        "email_sent": email_sent,
         "report_generated": datetime.utcnow().isoformat() + "Z"
     }

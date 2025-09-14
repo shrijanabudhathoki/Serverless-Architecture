@@ -22,7 +22,7 @@ PROCESSED_PREFIX = os.environ.get("PROCESSED_PREFIX", "processed/")
 ANALYSIS_PREFIX  = os.environ.get("ANALYSIS_PREFIX", "analyzed/")
 MARKERS_PREFIX   = os.environ.get("MARKERS_PREFIX", "markers/")
 DDB_TABLE        = os.environ.get("DDB_TABLE", "health_analysis")
-EVENT_BUS_NAME   = os.environ.get("EVENT_BUS_NAME")\
+EVENT_BUS_NAME   = os.environ.get("EVENT_BUS_NAME")
 
 def convert_floats(obj):
     if isinstance(obj, list):
@@ -33,7 +33,6 @@ def convert_floats(obj):
         return Decimal(str(obj))  # Safe conversion
     else:
         return obj
-
 
 # -------- Logging Utility --------
 def log(level, message, **kwargs):
@@ -96,61 +95,102 @@ def detect_anomalies(rows):
             })
     return anomalies
 
+def calculate_statistics(rows):
+    """Calculate basic statistics from the health data"""
+    if not rows:
+        return {}
+    
+    heart_rates = [int(row["heart_rate"]) for row in rows]
+    spo2_values = [int(row["spo2"]) for row in rows]
+    temps = [float(row["temp_c"]) for row in rows]
+    sys_bp = [int(row["systolic_bp"]) for row in rows]
+    dia_bp = [int(row["diastolic_bp"]) for row in rows]
+    steps = [int(row["steps"]) for row in rows]
+    
+    return {
+        "avg_heart_rate": round(sum(heart_rates) / len(heart_rates), 1),
+        "avg_spo2": round(sum(spo2_values) / len(spo2_values), 1),
+        "avg_temp": round(sum(temps) / len(temps), 1),
+        "avg_systolic": round(sum(sys_bp) / len(sys_bp), 1),
+        "avg_diastolic": round(sum(dia_bp) / len(dia_bp), 1),
+        "avg_steps": round(sum(steps) / len(steps), 0),
+        "max_heart_rate": max(heart_rates),
+        "min_heart_rate": min(heart_rates),
+        "max_temp": max(temps),
+        "min_spo2": min(spo2_values)
+    }
 
 def analyze_with_llm(rows, anomalies):
+    # Calculate statistics
+    stats = calculate_statistics(rows)
+    
     # Send only a sample + aggregated stats to Bedrock
     sample_text = json.dumps(rows[:20])
     anomaly_summary = f"{len(anomalies)} anomalies detected in {len(rows)} records."
+    stats_summary = f"Statistics: Avg HR {stats.get('avg_heart_rate', 0)} bpm, Avg SpO2 {stats.get('avg_spo2', 0)}%, Avg Temp {stats.get('avg_temp', 0)}°C"
 
     prompt = (
         "You are a health data analysis assistant. "
-        "You receive health metrics for multiple users over time, including heart rate, SpO2, temperature, blood pressure, and steps. "
-        "Your task is to analyze this dataset and provide a structured report.\n\n"
+        "Analyze the health metrics and provide insights about trends, patterns, and health risks.\n\n"
 
-        "1. Identify overall trends and patterns in the dataset (e.g., average heart rate, typical activity levels, common anomalies).\n"
-        "2. Summarize any significant anomalies and what they might indicate about health risks.\n"
-        "3. Provide actionable recommendations for users or healthcare providers based on the data.\n"
-        "4. Generate an executive summary suitable for reporting to non-technical stakeholders.\n"
-        "5. Return the analysis in JSON format with the following keys:\n"
-        "   - insights: List of key observations from the dataset.\n"
-        "   - recommendations: List of suggested actions or interventions.\n"
-        "   - summary: Concise executive summary of the findings.\n\n"
+        f"Dataset Overview:\n"
+        f"- Total records: {len(rows)}\n"
+        f"- {anomaly_summary}\n"
+        f"- {stats_summary}\n\n"
 
-        f"Sample health records (first 20 rows):\n{sample_text}\n\n"
-        f"Anomaly summary:\n{anomaly_summary}\n\n"
-        "Provide your output in valid JSON format only."
+        f"Sample health records:\n{sample_text}\n\n"
+
+        "Provide analysis in JSON format with these keys:\n"
+        "- insights: Array of specific health observations (e.g., 'Average heart rate of 123 bpm indicates elevated cardiovascular activity')\n"
+        "- recommendations: Array of actionable health advice (e.g., 'Consult cardiologist for persistent high heart rate readings')\n"
+        "- summary: Executive summary of key findings and health status\n\n"
+        
+        "Focus on:\n"
+        "1. Cardiovascular health patterns\n"
+        "2. Respiratory health (SpO2 trends)\n"
+        "3. Temperature anomalies and fever patterns\n"
+        "4. Blood pressure health risks\n"
+        "5. Activity level assessment\n\n"
+        
+        "Return only valid JSON."
     )
 
     response = bedrock.invoke_model(
-        modelId=os.environ.get("BEDROCK_MODEL_ID"),
+        modelId=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-3-sonnet-20240229-v1:0"),
         contentType="application/json",
         accept="application/json",
         body=json.dumps({
             "messages": [
                 {"role": "user", "content": [{"text": prompt}]}
             ],
-            "inferenceConfig": {"maxTokens": 500, "temperature": 0.5}
+            "inferenceConfig": {"maxTokens": 800, "temperature": 0.3}
         })
     )
     raw = response["body"].read()
     payload = json.loads(raw)
     output_text = payload["output"]["message"]["content"][0]["text"]
 
-    try:
-        result = json.loads(output_text)
-    except json.JSONDecodeError:
-        result = {"summary": output_text}
+    # Clean up the output text (remove markdown formatting if present)
+    if output_text.startswith('```json'):
+        output_text = output_text.replace('```json', '').replace('```', '').strip()
+    
+    result = json.loads(output_text)
+    log("INFO", "llm_analysis_success", insights_count=len(result.get("insights", [])), recommendations_count=len(result.get("recommendations", [])))
 
     return {
-        "insights": result.get("insights", ["No major trends observed"]),
-        "recommendations": result.get("recommendations", ["No recommendations"]),
+        "insights": result.get("insights", []),
+        "recommendations": result.get("recommendations", []),
         "summary": result.get("summary", "Analysis completed.")
     }
 
-
 def save_to_dynamodb(item):
     table = dynamodb.Table(DDB_TABLE)
-    table.put_item(Item=item)
+    try:
+        table.put_item(Item=item)
+        log("INFO", "dynamodb_save_success", correlation_id=item.get("correlation_id"))
+    except Exception as e:
+        log("ERROR", "dynamodb_save_failed", error=str(e), correlation_id=item.get("correlation_id"))
+        raise
 
 def send_event_to_eventbridge(event_type, detail, correlation_id):
     try:
@@ -171,30 +211,20 @@ def send_event_to_eventbridge(event_type, detail, correlation_id):
     except Exception as e:
         log("ERROR", "failed_to_send_event", correlation_id=correlation_id, error=str(e))
 
-def extract_insights_from_summary(summary):
-    # Simple heuristic: split by sentences and take first half as insights
-    lines = summary.split(". ")
-    mid = max(len(lines)//2, 1)
-    return [line.strip() for line in lines[:mid] if line.strip()]
-
-def extract_recommendations_from_summary(summary):
-    # Simple heuristic: second half of sentences as recommendations
-    lines = summary.split(". ")
-    mid = max(len(lines)//2, 1)
-    return [line.strip() for line in lines[mid:] if line.strip()]
-    
 # -------- Serialize DynamoDB item --------
 def serialize_ddb_item(anomalies, llm_result, correlation_id, key, rows):
-    summary_text = llm_result.get("summary", "Analysis completed.")
-
-    # Fallback: parse insights/recommendations from summary if missing
-    insights_list = llm_result.get("insights")
-    if not insights_list or insights_list == ["No major trends observed"]:
-        insights_list = extract_insights_from_summary(summary_text)
-
-    recommendations_list = llm_result.get("recommendations")
-    if not recommendations_list or recommendations_list == ["No recommendations"]:
-        recommendations_list = extract_recommendations_from_summary(summary_text)
+    """Create DynamoDB item with proper data types"""
+    
+    # Ensure we have valid insights and recommendations
+    insights = llm_result.get("insights", [])
+    recommendations = llm_result.get("recommendations", [])
+    summary = llm_result.get("summary", "Analysis completed.")
+    
+    log("INFO", "serializing_item", 
+        correlation_id=correlation_id,
+        insights_count=len(insights),
+        recommendations_count=len(recommendations),
+        summary_length=len(summary))
 
     item = {
         "correlation_id": correlation_id,
@@ -204,15 +234,14 @@ def serialize_ddb_item(anomalies, llm_result, correlation_id, key, rows):
         "processed_file": key.replace("raw/", "processed/"),
         "records_analyzed": len(rows),
         "anomalies": anomalies,
-        "insights": llm_result.get("insights", []),
-        "recommendations": llm_result.get("recommendations", []),
-        "summary": llm_result.get("summary", ""),
+        "insights": insights,  # Direct assignment - no fallback logic here
+        "recommendations": recommendations,  # Direct assignment - no fallback logic here
+        "summary": summary,
         "notification_sent": False,
         "notification_timestamp": None,
         "ttl": int(time.time()) + 7*24*3600
     }
-    return convert_floats(item)   # ✅ ensures no floats go to DynamoDB
-
+    return convert_floats(item)
 
 # -------- Lambda Handler --------
 def lambda_handler(event, context):
@@ -267,6 +296,11 @@ def lambda_handler(event, context):
 
             # 2. Get insights/summary from Bedrock
             llm_result = analyze_with_llm(rows, anomalies)
+            
+            log("INFO", "llm_analysis_completed", 
+                correlation_id=corr_id,
+                insights=len(llm_result.get("insights", [])),
+                recommendations=len(llm_result.get("recommendations", [])))
 
             # 3. Save results to DynamoDB
             ddb_item = serialize_ddb_item(anomalies, llm_result, corr_id, key, rows)
@@ -274,6 +308,9 @@ def lambda_handler(event, context):
 
             # 4. Upload full analysis (anomalies + summary) to S3
             analysis_output = {
+                "correlation_id": corr_id,
+                "analysis_timestamp": datetime.utcnow().isoformat() + "Z",
+                "records_analyzed": len(rows),
                 "anomalies": anomalies,
                 "insights": llm_result["insights"],
                 "recommendations": llm_result["recommendations"],
@@ -287,7 +324,6 @@ def lambda_handler(event, context):
                 ContentType="application/json"
             )
 
-
             # Write idempotency marker
             s3.put_object(Bucket=BUCKET_NAME, Key=mkey, Body=b"")
 
@@ -295,6 +331,7 @@ def lambda_handler(event, context):
                 correlation_id=corr_id,
                 analysis_key=analysis_key,
                 rows_analyzed=len(rows),
+                anomalies_detected=len(anomalies),
                 dynamodb_table=DDB_TABLE)
 
             # Send EventBridge event
@@ -304,6 +341,7 @@ def lambda_handler(event, context):
                 "source_key": key,
                 "analysis_key": analysis_key,
                 "row_count": len(rows),
+                "anomaly_count": len(anomalies),
                 "status": "success",
                 "summary": llm_result.get("summary", "Analysis completed")
             }
@@ -313,7 +351,8 @@ def lambda_handler(event, context):
                 "correlation_id": corr_id,
                 "status": "success",
                 "analysis_key": analysis_key,
-                "rows_analyzed": len(rows)
+                "rows_analyzed": len(rows),
+                "anomalies_detected": len(anomalies)
             })
 
         except Exception as e:
