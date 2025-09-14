@@ -21,6 +21,86 @@ def log(level, message, **kwargs):
     payload.update(kwargs)
     print(json.dumps(payload))
 
+# -------- Helper Functions --------
+def parse_json_summary(summary_text):
+    """Parse JSON summary and extract readable content"""
+    try:
+        # Try to parse as JSON
+        summary_data = json.loads(summary_text)
+        
+        # Extract insights, recommendations, and summary
+        insights = summary_data.get("insights", [])
+        recommendations = summary_data.get("recommendations", [])
+        main_summary = summary_data.get("summary", "")
+        
+        return insights, recommendations, main_summary
+    except json.JSONDecodeError:
+        # If it's not JSON, return as plain text
+        return [], [], summary_text
+
+def format_executive_summary(summaries):
+    """Format multiple summaries into a coherent executive summary"""
+    if not summaries:
+        return "No analysis data available."
+    
+    all_insights = []
+    all_recommendations = []
+    main_summaries = []
+    
+    for summary in summaries:
+        if not summary:
+            continue
+            
+        insights, recommendations, main_summary = parse_json_summary(summary)
+        all_insights.extend(insights)
+        all_recommendations.extend(recommendations)
+        if main_summary and main_summary != summary:
+            main_summaries.append(main_summary)
+    
+    # Build formatted summary
+    formatted_summary = ""
+    
+    if main_summaries:
+        formatted_summary += "Overall Health Status:\n"
+        for i, summary in enumerate(main_summaries, 1):
+            formatted_summary += f"{i}. {summary}\n"
+        formatted_summary += "\n"
+    
+    if all_insights:
+        formatted_summary += "Key Health Insights:\n"
+        for i, insight in enumerate(set(all_insights), 1):  # Remove duplicates
+            formatted_summary += f"• {insight}\n"
+        formatted_summary += "\n"
+    
+    if all_recommendations:
+        formatted_summary += "Recommended Actions:\n"
+        for i, rec in enumerate(set(all_recommendations), 1):  # Remove duplicates
+            formatted_summary += f"• {rec}\n"
+    
+    return formatted_summary if formatted_summary else "Analysis completed successfully."
+
+def format_insights_and_recommendations(items):
+    """Extract and format insights and recommendations from DynamoDB items"""
+    formatted_insights = []
+    formatted_recommendations = []
+    
+    for item in items:
+        # Get insights
+        insights = item.get("insights", [])
+        if insights and insights != ["No major trends observed"]:
+            formatted_insights.extend(insights)
+        
+        # Get recommendations  
+        recommendations = item.get("recommendations", [])
+        if recommendations and recommendations != ["No recommendations"]:
+            formatted_recommendations.extend(recommendations)
+    
+    # Remove duplicates while preserving order
+    unique_insights = list(dict.fromkeys(formatted_insights))
+    unique_recommendations = list(dict.fromkeys(formatted_recommendations))
+    
+    return unique_insights, unique_recommendations
+
 # -------- DynamoDB Retrieval --------
 def fetch_recent_analysis(correlation_id=None, limit=10):
     table = dynamodb.Table(DDB_TABLE)
@@ -73,71 +153,249 @@ def lambda_handler(event, context):
             key = anomaly.get("anomaly", "Unknown")
             top_anomalies[key] = top_anomalies.get(key, 0) + 1
 
-    # Collect insights, recommendations, and summaries from DynamoDB
-    insights_list = [i for item in items for i in item.get("insights", [])]
-    recommendations_list = [r for item in items for r in item.get("recommendations", [])]
+    # Sort anomalies by frequency (most common first)
+    sorted_anomalies = sorted(top_anomalies.items(), key=lambda x: x[1], reverse=True)
+
+    # Extract and format insights and recommendations
+    formatted_insights, formatted_recommendations = format_insights_and_recommendations(items)
+    
+    # Get summaries and format executive summary
     summaries = [item.get("summary") for item in items if item.get("summary")]
-    combined_summary = "\n".join(summaries) if summaries else "No summary available."
+    executive_summary = format_executive_summary(summaries)
 
     # Email content
-    subject = f"Health Data Analysis Report ({datetime.utcnow().date()})"
-    anomalies_text = "\n".join([f"- {k}: {v}" for k, v in top_anomalies.items()]) or "None"
+    subject = f"Health Data Analysis Report - {datetime.utcnow().strftime('%B %d, %Y')}"
+    
+    # Format anomalies for text version
+    anomalies_text = "\n".join([f"  • {anomaly}: {count} occurrences" for anomaly, count in sorted_anomalies[:10]]) or "  • No anomalies detected"
+    
+    # Format insights for text version
+    insights_text = "\n".join([f"  • {insight}" for insight in formatted_insights]) or "  • No significant trends identified"
+    
+    # Format recommendations for text version
+    recommendations_text = "\n".join([f"  • {rec}" for rec in formatted_recommendations]) or "  • Continue regular health monitoring"
 
-    body_text = (
-        f"Health Data Analysis Summary\n\n"
-        f"Total Rows Processed: {total_rows}\n"
-        f"Total Anomalies Detected: {total_anomalies}\n"
-        f"Top Anomalies:\n{anomalies_text}\n\n"
-        f"Insights:\n" + "\n".join(f"- {i}" for i in insights_list) + "\n\n"
-        f"Recommendations:\n" + "\n".join(f"- {r}" for r in recommendations_list) + "\n\n"
-        f"Executive Summary:\n{combined_summary}\n"
-    )
+    body_text = f"""Health Data Analysis Report
+Generated on: {datetime.utcnow().strftime('%B %d, %Y at %I:%M %p UTC')}
+
+=== OVERVIEW ===
+Total Health Records Processed: {total_rows:,}
+Total Anomalies Detected: {total_anomalies:,}
+
+=== TOP HEALTH ANOMALIES ===
+{anomalies_text}
+
+=== KEY INSIGHTS ===
+{insights_text}
+
+=== RECOMMENDATIONS ===
+{recommendations_text}
+
+=== EXECUTIVE SUMMARY ===
+{executive_summary}
+
+This report is automatically generated from your health monitoring system.
+If you have concerns about any anomalies, please consult with a healthcare professional.
+"""
+
+    # HTML version with better formatting
+    anomalies_table_rows = "".join([
+        f"<tr><td>{anomaly}</td><td style='text-align: center;'><strong>{count}</strong></td></tr>" 
+        for anomaly, count in sorted_anomalies[:10]
+    ]) or "<tr><td colspan='2' style='text-align: center; color: #2ECC71;'>No anomalies detected</td></tr>"
+
+    insights_html = "".join([f"<li>{insight}</li>" for insight in formatted_insights]) or "<li style='color: #7F8C8D;'>No significant trends identified</li>"
+    
+    recommendations_html = "".join([f"<li>{rec}</li>" for rec in formatted_recommendations]) or "<li style='color: #7F8C8D;'>Continue regular health monitoring</li>"
+
+    # Format executive summary for HTML (preserve line breaks)
+    executive_summary_html = executive_summary.replace('\n', '<br>')
 
     body_html = f"""
+    <!DOCTYPE html>
     <html>
     <head>
-    <style>
-        body {{ font-family: Arial, sans-serif; line-height: 1.6; }}
-        h2 {{ color: #2E86C1; }}
-        h3 {{ color: #C0392B; }}
-        table {{ border-collapse: collapse; width: 100%; margin-top: 10px; }}
-        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-        th {{ background-color: #2980B9; color: white; font-weight: bold; }}
-        tr:nth-child(even) {{ background-color: #f2f2f2; }}
-        ul {{ margin-top: 0; }}
-        .section-header {{ color: #117A65; font-weight: bold; font-size: 16px; margin-top: 15px; }}
-    </style>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body {{ 
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+                line-height: 1.6; 
+                color: #333; 
+                max-width: 800px; 
+                margin: 0 auto; 
+                padding: 20px;
+                background-color: #f8f9fa;
+            }}
+            .container {{ 
+                background: white; 
+                padding: 30px; 
+                border-radius: 10px; 
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1); 
+            }}
+            .header {{ 
+                text-align: center; 
+                margin-bottom: 30px; 
+                padding-bottom: 20px; 
+                border-bottom: 3px solid #3498DB; 
+            }}
+            h1 {{ 
+                color: #2C3E50; 
+                margin-bottom: 10px; 
+                font-size: 28px; 
+            }}
+            .subtitle {{ 
+                color: #7F8C8D; 
+                font-size: 14px; 
+                margin: 0; 
+            }}
+            .metrics {{ 
+                display: flex; 
+                justify-content: space-around; 
+                margin: 20px 0; 
+                padding: 20px; 
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                border-radius: 8px; 
+                color: white; 
+            }}
+            .metric {{ 
+                text-align: center; 
+            }}
+            .metric-number {{ 
+                font-size: 32px; 
+                font-weight: bold; 
+                display: block; 
+            }}
+            .metric-label {{ 
+                font-size: 12px; 
+                opacity: 0.9; 
+            }}
+            h2 {{ 
+                color: #2980B9; 
+                margin-top: 30px; 
+                margin-bottom: 15px; 
+                padding-bottom: 8px; 
+                border-bottom: 2px solid #ECF0F1; 
+            }}
+            table {{ 
+                border-collapse: collapse; 
+                width: 100%; 
+                margin: 15px 0; 
+                border-radius: 8px; 
+                overflow: hidden; 
+                box-shadow: 0 2px 8px rgba(0,0,0,0.1); 
+            }}
+            th {{ 
+                background: linear-gradient(135deg, #3498DB, #2980B9); 
+                color: white; 
+                font-weight: 600; 
+                padding: 12px; 
+                text-align: left; 
+            }}
+            td {{ 
+                padding: 12px; 
+                border-bottom: 1px solid #ECF0F1; 
+            }}
+            tr:nth-child(even) {{ 
+                background-color: #F8F9FA; 
+            }}
+            tr:hover {{ 
+                background-color: #E3F2FD; 
+            }}
+            ul {{ 
+                margin: 15px 0; 
+                padding-left: 0; 
+            }}
+            li {{ 
+                list-style: none; 
+                padding: 8px 0; 
+                padding-left: 25px; 
+                position: relative; 
+            }}
+            li:before {{ 
+                content: '✓'; 
+                position: absolute; 
+                left: 0; 
+                color: #27AE60; 
+                font-weight: bold; 
+            }}
+            .summary-box {{ 
+                background: linear-gradient(135deg, #74b9ff, #0984e3); 
+                color: white; 
+                padding: 20px; 
+                border-radius: 8px; 
+                margin: 20px 0; 
+            }}
+            .summary-box h3 {{ 
+                margin-top: 0; 
+                color: white; 
+            }}
+            .footer {{ 
+                margin-top: 30px; 
+                padding-top: 20px; 
+                border-top: 1px solid #ECF0F1; 
+                text-align: center; 
+                color: #7F8C8D; 
+                font-size: 12px; 
+            }}
+        </style>
     </head>
     <body>
-    <h2>Health Data Analysis Report</h2>
-    <p><b>Total Rows Processed:</b> {total_rows}</p>
-    <p><b>Total Anomalies Detected:</b> {total_anomalies}</p>
+        <div class="container">
+            <div class="header">
+                <h1>Health Data Analysis Report</h1>
+                <p class="subtitle">Generated on {datetime.utcnow().strftime('%B %d, %Y at %I:%M %p UTC')}</p>
+            </div>
 
-    <h3>Top Anomalies</h3>
-    <table>
-        <tr>
-        <th>Anomaly</th>
-        <th>Count</th>
-        </tr>
-        {''.join(f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in top_anomalies.items())}
-    </table>
+            <div class="metrics">
+                <div class="metric">
+                    <span class="metric-number">{total_rows:,}</span>
+                    <span class="metric-label">Records Processed</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-number">{total_anomalies:,}</span>
+                    <span class="metric-label">Anomalies Detected</span>
+                </div>
+            </div>
 
-    <div class="section-header">Insights</div>
-    <ul>
-        {''.join(f"<li>{i}</li>" for i in insights_list)}
-    </ul>
+            <h2>🔍 Top Health Anomalies</h2>
+            <table>
+                <tr>
+                    <th>Health Anomaly</th>
+                    <th style="text-align: center;">Frequency</th>
+                </tr>
+                {anomalies_table_rows}
+            </table>
 
-    <div class="section-header">Recommendations</div>
-    <ul>
-        {''.join(f"<li>{r}</li>" for r in recommendations_list)}
-    </ul>
+            <h2>💡 Key Health Insights</h2>
+            <ul>
+                {insights_html}
+            </ul>
 
-    <div class="section-header">Executive Summary</div>
-    <p>{combined_summary}</p>
+            <h2>📋 Recommended Actions</h2>
+            <ul>
+                {recommendations_html}
+            </ul>
+
+            <div class="summary-box">
+                <h3>📊 Executive Summary</h3>
+                <p>{executive_summary_html}</p>
+            </div>
+
+            <div class="footer">
+                <p>This report is automatically generated from your health monitoring system.<br>
+                If you have concerns about any anomalies, please consult with a healthcare professional.</p>
+            </div>
+        </div>
     </body>
     </html>
     """
 
     send_email(subject, body_text, body_html)
 
-    return {"status": "success", "total_rows": total_rows, "total_anomalies": total_anomalies}
+    return {
+        "status": "success", 
+        "total_rows": total_rows, 
+        "total_anomalies": total_anomalies,
+        "report_generated": datetime.utcnow().isoformat() + "Z"
+    }
