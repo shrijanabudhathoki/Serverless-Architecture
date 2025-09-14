@@ -3,13 +3,13 @@ provider "aws" {
 }
 
 # S3 Bucket to store raw data
-resource "aws_s3_bucket" "input_bucket"{
-    bucket = "health-data-bucket-shrijana"
+resource "aws_s3_bucket" "input_bucket" {
+  bucket = "health-data-bucket-shrijana"
 
-    tags = {
-        Name = "Shrijana"
-        Project = "Serverless Architecture"
-    }
+  tags = {
+    Name    = "Shrijana"
+    Project = "Serverless Architecture"
+  }
 }
 
 resource "aws_s3_bucket_versioning" "input_bucket_versioning" {
@@ -22,9 +22,9 @@ resource "aws_s3_bucket_versioning" "input_bucket_versioning" {
 
 # DynamoDB Table for analysis results
 resource "aws_dynamodb_table" "analysis_table" {
-  name           = "health_analysis"
-  billing_mode   = "PAY_PER_REQUEST"
-  hash_key       = "correlation_id"
+  name         = "health_analysis"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "correlation_id"
 
   attribute {
     name = "correlation_id"
@@ -39,7 +39,7 @@ resource "aws_dynamodb_table" "analysis_table" {
 # EventBridge Custom Bus for workflow orchestration
 resource "aws_cloudwatch_event_bus" "health_data_bus" {
   name = "health-data-processing-bus"
-  
+
   tags = {
     Project = "Serverless Architecture"
   }
@@ -59,14 +59,14 @@ resource "aws_iam_role" "lambda_role" {
 }
 
 resource "aws_iam_role_policy" "lambda_policy" {
-  name   = "lambda_s3_eventbridge_policy"
-  role   = aws_iam_role.lambda_role.id
+  name = "lambda_s3_eventbridge_policy"
+  role = aws_iam_role.lambda_role.id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = ["s3:GetObject","s3:PutObject", "s3:ListBucket"]
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"]
         Resource = [
           "arn:aws:s3:::health-data-bucket-shrijana",
           "arn:aws:s3:::health-data-bucket-shrijana/*"
@@ -74,25 +74,25 @@ resource "aws_iam_role_policy" "lambda_policy" {
       },
       {
         Effect   = "Allow"
-        Action   = ["logs:CreateLogGroup","logs:CreateLogStream","logs:PutLogEvents"]
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "*"
       },
       {
         Effect   = "Allow"
-        Action   = ["dynamodb:PutItem","dynamodb:UpdateItem","dynamodb:GetItem","dynamodb:Scan"]
+        Action   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:GetItem", "dynamodb:Scan"]
         Resource = aws_dynamodb_table.analysis_table.arn
       },
       {
-        Effect   = "Allow"
-        Action   = [
+        Effect = "Allow"
+        Action = [
           "bedrock:InvokeModel",
           "bedrock:InvokeModelWithResponseStream"
         ]
         Resource = "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0"
       },
       {
-        Effect   = "Allow"
-        Action   = [
+        Effect = "Allow"
+        Action = [
           "events:PutEvents"
         ]
         Resource = [
@@ -111,16 +111,16 @@ resource "aws_iam_role_policy" "notifier_policy" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = [
+        Effect = "Allow"
+        Action = [
           "ses:SendEmail",
           "ses:SendRawEmail"
         ]
         Resource = "*"
       },
       {
-        Effect   = "Allow"
-        Action   = [
+        Effect = "Allow"
+        Action = [
           "dynamodb:Scan",
           "dynamodb:GetItem"
         ]
@@ -128,7 +128,7 @@ resource "aws_iam_role_policy" "notifier_policy" {
       },
       {
         Effect   = "Allow"
-        Action   = ["logs:CreateLogGroup","logs:CreateLogStream","logs:PutLogEvents"]
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "*"
       }
     ]
@@ -139,8 +139,8 @@ resource "aws_iam_role_policy" "notifier_policy" {
 # Data ingestor Lambda Function
 data "archive_file" "ingestor_lambda_zip_archive" {
   type        = "zip"
-  source_dir = "${path.module}/../data-ingestor-lambda"
-  output_path = "${path.cwd}/../data-ingestor-lambda/lambda_function.zip"  
+  source_dir  = "${path.module}/../data-ingestor-lambda"
+  output_path = "${path.cwd}/../data-ingestor-lambda/lambda_function.zip"
 }
 
 resource "aws_lambda_function" "data_ingestor" {
@@ -154,12 +154,12 @@ resource "aws_lambda_function" "data_ingestor" {
 
   environment {
     variables = {
-      BUCKET_NAME = aws_s3_bucket.input_bucket.bucket
-      RAW_PREFIX  = "raw/"
+      BUCKET_NAME      = aws_s3_bucket.input_bucket.bucket
+      RAW_PREFIX       = "raw/"
       PROCESSED_PREFIX = "processed/"
-      REJECTED_PREFIX = "rejected/"
-      MARKERS_PREFIX = "markers/"
-      EVENT_BUS_NAME = aws_cloudwatch_event_bus.health_data_bus.name
+      REJECTED_PREFIX  = "rejected/"
+      MARKERS_PREFIX   = "markers/"
+      EVENT_BUS_NAME   = aws_cloudwatch_event_bus.health_data_bus.name
     }
   }
 }
@@ -167,8 +167,8 @@ resource "aws_lambda_function" "data_ingestor" {
 # Data analyzer Lambda Function
 data "archive_file" "analyzer_lambda_zip_archive" {
   type        = "zip"
-  source_dir = "${path.module}/../data-analyzer-lambda"
-  output_path = "${path.cwd}/../data-analyzer-lambda/lambda_function.zip"  
+  source_dir  = "${path.module}/../data-analyzer-lambda"
+  output_path = "${path.cwd}/../data-analyzer-lambda/lambda_function.zip"
 }
 
 resource "aws_lambda_function" "data_analyzer" {
@@ -182,13 +182,13 @@ resource "aws_lambda_function" "data_analyzer" {
 
   environment {
     variables = {
-      BUCKET_NAME = aws_s3_bucket.input_bucket.bucket
+      BUCKET_NAME      = aws_s3_bucket.input_bucket.bucket
       PROCESSED_PREFIX = "processed/"
-      ANALYSIS_PREFIX = "analyzed/"
-      MARKERS_PREFIX = "markers/"
-      DDB_TABLE         = aws_dynamodb_table.analysis_table.name
-      BEDROCK_MODEL_ID  = "amazon.nova-lite-v1:0"
-      EVENT_BUS_NAME = aws_cloudwatch_event_bus.health_data_bus.name
+      ANALYSIS_PREFIX  = "analyzed/"
+      MARKERS_PREFIX   = "markers/"
+      DDB_TABLE        = aws_dynamodb_table.analysis_table.name
+      BEDROCK_MODEL_ID = "amazon.nova-lite-v1:0"
+      EVENT_BUS_NAME   = aws_cloudwatch_event_bus.health_data_bus.name
     }
   }
 }
@@ -196,8 +196,8 @@ resource "aws_lambda_function" "data_analyzer" {
 # Notifier Lambda Function
 data "archive_file" "notifier_lambda_zip_archive" {
   type        = "zip"
-  source_dir = "${path.module}/../notifier-lambda"
-  output_path = "${path.cwd}/../notifier-lambda/lambda_function.zip"  
+  source_dir  = "${path.module}/../notifier-lambda"
+  output_path = "${path.cwd}/../notifier-lambda/lambda_function.zip"
 }
 
 resource "aws_lambda_function" "notifier_lambda" {
@@ -211,10 +211,10 @@ resource "aws_lambda_function" "notifier_lambda" {
 
   environment {
     variables = {
-      DDB_TABLE       = aws_dynamodb_table.analysis_table.name
-      SES_SENDER      = "shrijanabudhathoki51@gmail.com"
-      SES_RECIPIENTS  = "shrijanabudhathoki51@gmail.com"
-      BEDROCK_MODEL_ID = "amazon.nova-lite-v1:0"
+      DDB_TABLE          = aws_dynamodb_table.analysis_table.name
+      SES_SENDER         = "shrijanabudhathoki51@gmail.com"
+      SES_RECIPIENTS     = "shrijanabudhathoki51@gmail.com"
+      BEDROCK_MODEL_ID   = "amazon.nova-lite-v1:0"
       BEDROCK_MAX_TOKENS = "500"
     }
   }
@@ -239,7 +239,7 @@ resource "aws_lambda_permission" "allow_eventbridge_analyzer" {
   function_name = aws_lambda_function.data_analyzer.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.data_processed_rule.arn
-  depends_on = [aws_cloudwatch_event_rule.data_processed_rule]
+  depends_on    = [aws_cloudwatch_event_rule.data_processed_rule]
 }
 
 # S3 bucket notification for raw data ingestion
@@ -283,8 +283,8 @@ resource "aws_cloudwatch_event_target" "analyzer_target" {
 
   input_transformer {
     input_paths = {
-      bucket = "$.detail.bucket"
-      key    = "$.detail.processed_key"
+      bucket         = "$.detail.bucket"
+      key            = "$.detail.processed_key"
       correlation_id = "$.detail.correlation_id"
     }
     input_template = <<TEMPLATE
@@ -298,7 +298,7 @@ TEMPLATE
 
 
   }
-  
+
   depends_on = [
     aws_lambda_function.data_analyzer,
     aws_lambda_permission.allow_eventbridge_analyzer,
@@ -427,4 +427,255 @@ output "eventbridge_bus_name" {
 
 output "dynamodb_table_name" {
   value = aws_dynamodb_table.analysis_table.name
+}
+
+# S3 Bucket for cicd artifacts
+resource "aws_s3_bucket" "artifacts_bucket" {
+  bucket = "health-cicd-artifacts-bucket"
+
+  tags = {
+    Name    = "CICD Artifacts"
+    Project = "Serverless Architecture"
+  }
+}
+
+# IAM role for CodePipeline
+resource "aws_iam_role" "codepipeline_role" {
+  name = "codepipeline-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "codepipeline.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "codepipeline_full_access" {
+  role       = aws_iam_role.codepipeline_role.id
+  policy_arn = "arn:aws:iam::aws:policy/AWSCodePipeline_FullAccess"
+}
+
+# Add additional policy for CodePipeline to access S3 and other services
+resource "aws_iam_role_policy" "codepipeline_policy" {
+  name = "codepipeline-policy"
+  role = aws_iam_role.codepipeline_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetBucketVersioning",
+          "s3:GetObject",
+          "s3:GetObjectVersion",
+          "s3:PutObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_s3_bucket.artifacts_bucket.arn,
+          "${aws_s3_bucket.artifacts_bucket.arn}/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "codebuild:BatchGetBuilds",
+          "codebuild:StartBuild"
+        ]
+        Resource = [
+          aws_codebuild_project.ci.arn,
+          aws_codebuild_project.deploy.arn,
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "codestar-connections:UseConnection"
+        ]
+        Resource = aws_codestarconnections_connection.github_connection.arn
+      }
+    ]
+  })
+}
+
+
+# IAM Role for CodeBuild
+resource "aws_iam_role" "codebuild_role" {
+  name = "codebuild-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "codebuild.amazonaws.com" }
+    }]
+  })
+}
+
+# IAM role policy for CodeBuild
+resource "aws_iam_role_policy_attachment" "codebuild_logs" {
+  role       = aws_iam_role.codebuild_role.id
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+}
+
+resource "aws_iam_role_policy" "codebuild_policy" {
+  name = "codebuild-policy"
+  role = aws_iam_role.codebuild_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_s3_bucket.artifacts_bucket.arn,
+          "${aws_s3_bucket.artifacts_bucket.arn}/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "lambda:*",
+          "s3:*",
+          "dynamodb:*",
+          "events:*",
+          "iam:*",
+          "logs:*",
+          "sns:*",
+          "ses:*",
+          "bedrock:*"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# CodeBuild Project for CI - Terraform Validate and Python Tests
+resource "aws_codebuild_project" "ci" {
+  name         = "serverless-health-ci"
+  service_role = aws_iam_role.codebuild_role.arn
+
+  artifacts {
+    type = "CODEPIPELINE"
+  }
+
+  environment {
+    compute_type    = "BUILD_GENERAL1_SMALL"
+    image           = "aws/codebuild/standard:7.0"
+    type            = "LINUX_CONTAINER"
+    privileged_mode = true
+  }
+
+  source {
+    type      = "CODEPIPELINE"
+    buildspec = "ingestion/terraform/Buildspec/buildspec-ci.yml"
+  }
+}
+
+# CodeBuild Project for deploy 
+resource "aws_codebuild_project" "deploy" {
+  name         = "serverless-health-deploy"
+  service_role = aws_iam_role.codebuild_role.arn
+
+  artifacts {
+    type = "CODEPIPELINE"
+  }
+
+  environment {
+    compute_type    = "BUILD_GENERAL1_SMALL"
+    image           = "aws/codebuild/standard:7.0"
+    type            = "LINUX_CONTAINER"
+    privileged_mode = true
+  }
+
+  source {
+    type      = "CODEPIPELINE"
+    buildspec = "ingestion/terraform/Buildspec/buildspec-deploy.yml"
+  }
+}
+
+# Create codestar connection for Github
+resource "aws_codestarconnections_connection" "github_connection" {
+  name          = "github-connection"
+  provider_type = "GitHub"
+  tags = {
+    Project = "Serverless Architecture"
+  }
+}
+
+# CodePipeline for CI/CD
+resource "aws_codepipeline" "health_codepipeline" {
+  name     = "health-pipeline"
+  role_arn = aws_iam_role.codepipeline_role.arn
+
+  artifact_store {
+    location = aws_s3_bucket.artifacts_bucket.bucket
+    type     = "S3"
+
+  }
+
+  stage {
+    name = "Source"
+
+    action {
+      name             = "Source"
+      category         = "Source"
+      owner            = "AWS"
+      provider         = "CodeStarSourceConnection"
+      version          = "1"
+      output_artifacts = ["source_output"]
+
+      configuration = {
+        ConnectionArn    = aws_codestarconnections_connection.github_connection.arn
+        FullRepositoryId = "shrijanabudhathoki/Serverless-Architecture"
+        BranchName       = "main"
+      }
+
+    }
+  }
+
+  stage {
+    name = "CI"
+
+    action {
+      name             = "CI"
+      category         = "Build"
+      owner            = "AWS"
+      provider         = "CodeBuild"
+      version          = "1"
+      input_artifacts  = ["source_output"]
+      output_artifacts = ["ci_output"]
+
+      configuration = {
+        ProjectName = aws_codebuild_project.ci.name
+      }
+    }
+  }
+
+  stage {
+    name = "Deploy"
+
+    action {
+      name             = "Deploy"
+      category         = "Build"
+      owner            = "AWS"
+      provider         = "CodeBuild"
+      version          = "1"
+      input_artifacts  = ["ci_output"]
+      output_artifacts = ["deploy_output"]
+
+      configuration = {
+        ProjectName = aws_codebuild_project.deploy.name
+      }
+    }
+  }
 }
