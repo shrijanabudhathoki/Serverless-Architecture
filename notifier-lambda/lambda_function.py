@@ -135,17 +135,45 @@ def lambda_handler(event, context):
 
     body_html = f"""
     <html>
-    <head></head>
+    <head>
+    <style>
+        body {{ font-family: Arial, sans-serif; line-height: 1.6; }}
+        h2 {{ color: #2E86C1; }}
+        h3 {{ color: #C0392B; }}
+        table {{ border-collapse: collapse; width: 100%; margin-top: 10px; }}
+        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+        th {{ background-color: #2980B9; color: white; font-weight: bold; }}
+        tr:nth-child(even) {{ background-color: #f2f2f2; }}
+        ul {{ margin-top: 0; }}
+        .section-header {{ color: #117A65; font-weight: bold; font-size: 16px; margin-top: 15px; }}
+    </style>
+    </head>
     <body>
-      <h2 style="color:#2E86C1;">Health Data Analysis Report</h2>
-      <p><b>Total Rows Processed:</b> {total_rows}</p>
-      <p><b>Total Anomalies Detected:</b> {total_anomalies}</p>
-      <h3 style="color:#C0392B;">Top Anomalies:</h3>
-      <ul>
-        {''.join(f"<li>{k}: {v}</li>" for k, v in top_anomalies.items()) or "<li>None</li>"}
-      </ul>
-      <h3 style="color:#117A65;">Executive Summary:</h3>
-      <p>{combined_summary}</p>
+    <h2>Health Data Analysis Report</h2>
+    <p><b>Total Rows Processed:</b> {total_rows}</p>
+    <p><b>Total Anomalies Detected:</b> {total_anomalies}</p>
+
+    <h3>Top Anomalies</h3>
+    <table>
+        <tr>
+        <th>Anomaly</th>
+        <th>Count</th>
+        </tr>
+        {''.join(f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in top_anomalies.items())}
+    </table>
+
+    <div class="section-header">Insights</div>
+    <ul>
+        {''.join(f"<li>{i}</li>" for i in insights_list)}
+    </ul>
+
+    <div class="section-header">Recommendations</div>
+    <ul>
+        {''.join(f"<li>{r}</li>" for r in recommendations_list)}
+    </ul>
+
+    <div class="section-header">Executive Summary</div>
+    <p>{combined_summary}</p>
     </body>
     </html>
     """
