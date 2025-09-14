@@ -235,7 +235,7 @@ If you have concerns about any anomalies, please consult with a healthcare profe
     recommendations_html = "".join([f"<li>{rec}</li>" for rec in recommendations[:10]]) or "<li style='color: #7F8C8D;'>Continue regular health monitoring</li>"
 
     # Format executive summary for HTML (preserve line breaks)
-    executive_summary_html = executive_summary.replace('\n', '<br>')
+    # executive_summary_html = executive_summary.replace('\n', '<br>')
 
     body_html = f"""
     <!DOCTYPE html>
