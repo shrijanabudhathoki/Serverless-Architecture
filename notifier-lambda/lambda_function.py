@@ -14,13 +14,27 @@ SES_RECIPIENTS = os.environ.get("SES_RECIPIENTS", "").split(",")
 
 # -------- Logging --------
 def log(level, message, **kwargs):
+    from decimal import Decimal
+
+    def convert(obj):
+        if isinstance(obj, Decimal):
+            # Convert integer-like Decimals to int, others to float
+            return int(obj) if obj % 1 == 0 else float(obj)
+        elif isinstance(obj, dict):
+            return {k: convert(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert(i) for i in obj]
+        else:
+            return obj
+
     payload = {
         "ts": datetime.utcnow().isoformat() + "Z",
         "level": level,
         "message": message
     }
     payload.update(kwargs)
-    print(json.dumps(payload))
+    safe_payload = convert(payload)
+    print(json.dumps(safe_payload))
 
 # -------- DynamoDB Retrieval --------
 def fetch_recent_analysis(correlation_id=None, limit=10):
