@@ -554,7 +554,21 @@ resource "aws_iam_role_policy" "codebuild_policy" {
           "bedrock:*"
         ]
         Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:DescribeAlarms",
+          "cloudwatch:PutMetricAlarm",
+          "codebuild:BatchGetProjects",
+          "codebuild:BatchGetBuilds",
+          "codeconnections:GetConnection",
+          "codestar-connections:UseConnection",
+          "codestar-connections:ListConnections"
+        ]
+        Resource = "*"
       }
+
     ]
   })
 }
