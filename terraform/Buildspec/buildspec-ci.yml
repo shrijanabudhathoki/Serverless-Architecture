@@ -19,3 +19,8 @@ phases:
       - terraform validate
       - echo "Running pytest for data-ingestor-lambda"
       - pytest data-ingestor-lambda/test_validation.py
+
+  artifacts:
+    files:
+      - '**/*'
+    base-directory: terraform 
