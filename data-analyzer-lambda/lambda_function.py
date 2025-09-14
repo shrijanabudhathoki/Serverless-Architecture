@@ -148,7 +148,6 @@ def analyze_with_llm(rows, anomalies):
     }
 
 
-
 def save_to_dynamodb(item):
     table = dynamodb.Table(DDB_TABLE)
     table.put_item(Item=item)
