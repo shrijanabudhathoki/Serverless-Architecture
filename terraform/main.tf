@@ -564,7 +564,9 @@ resource "aws_iam_role_policy" "codebuild_policy" {
           "codebuild:BatchGetBuilds",
           "codeconnections:GetConnection",
           "codestar-connections:UseConnection",
-          "codestar-connections:ListConnections"
+          "codestar-connections:ListConnections",
+          "cloudwatch:ListTagsForResource",
+          "codeconnections:ListTagsForResource"
         ]
         Resource = "*"
       }
