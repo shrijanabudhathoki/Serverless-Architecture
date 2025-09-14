@@ -89,21 +89,29 @@ def extract_insights_and_recommendations(items):
     return unique_insights, unique_recommendations
 
 def format_executive_summary(items):
-    """Extract only the summary text from the stored JSON in DynamoDB"""
+    """Extract only the textual executive summary from items."""
     summaries = []
-    
+
     for item in items:
-        summary_json = item.get("summary")
-        if isinstance(summary_json, dict) and "summary" in summary_json:
-            summaries.append(summary_json["summary"])
-        elif isinstance(summary_json, str):
-            summaries.append(summary_json)
-    
+        summary_value = item.get("summary")
+
+        if isinstance(summary_value, dict):
+            # DynamoDB stored full JSON → extract the "summary" field
+            text_summary = summary_value.get("summary", "").strip()
+        elif isinstance(summary_value, str):
+            # Already a plain text summary
+            text_summary = summary_value.strip()
+        else:
+            text_summary = ""
+
+        if text_summary and text_summary != "Analysis completed.":
+            summaries.append(text_summary)
+
     if not summaries:
         return "Health data analysis completed successfully. Regular monitoring continues."
-    
-    # Use only the first summary if multiple
-    return summaries[0]
+
+    # If multiple summaries, prefer the first one
+    return summaries
 
 
 # -------- SES Email --------
