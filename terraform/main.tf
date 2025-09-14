@@ -670,7 +670,7 @@ resource "aws_codepipeline" "health_codepipeline" {
       owner            = "AWS"
       provider         = "CodeBuild"
       version          = "1"
-      input_artifacts  = ["ci_output"]
+      input_artifacts  = ["source_output"]
       output_artifacts = ["deploy_output"]
 
       configuration = {
