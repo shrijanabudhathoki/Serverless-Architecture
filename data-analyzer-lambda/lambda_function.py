@@ -171,6 +171,18 @@ def send_event_to_eventbridge(event_type, detail, correlation_id):
     except Exception as e:
         log("ERROR", "failed_to_send_event", correlation_id=correlation_id, error=str(e))
 
+def extract_insights_from_summary(summary):
+    # Simple heuristic: split by sentences and take first half as insights
+    lines = summary.split(". ")
+    mid = max(len(lines)//2, 1)
+    return [line.strip() for line in lines[:mid] if line.strip()]
+
+def extract_recommendations_from_summary(summary):
+    # Simple heuristic: second half of sentences as recommendations
+    lines = summary.split(". ")
+    mid = max(len(lines)//2, 1)
+    return [line.strip() for line in lines[mid:] if line.strip()]
+    
 # -------- Serialize DynamoDB item --------
 def serialize_ddb_item(anomalies, llm_result, correlation_id, key, rows):
     summary_text = llm_result.get("summary", "Analysis completed.")
