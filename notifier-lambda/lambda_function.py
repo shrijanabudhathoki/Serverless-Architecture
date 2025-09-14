@@ -2,6 +2,7 @@ import boto3
 import os
 import json
 from datetime import datetime
+from decimal import Decimal
 
 # -------- CONFIG --------
 dynamodb = boto3.resource("dynamodb")
