@@ -173,6 +173,17 @@ def send_event_to_eventbridge(event_type, detail, correlation_id):
 
 # -------- Serialize DynamoDB item --------
 def serialize_ddb_item(anomalies, llm_result, correlation_id, key, rows):
+    summary_text = llm_result.get("summary", "Analysis completed.")
+
+    # Fallback: parse insights/recommendations from summary if missing
+    insights_list = llm_result.get("insights")
+    if not insights_list or insights_list == ["No major trends observed"]:
+        insights_list = extract_insights_from_summary(summary_text)
+
+    recommendations_list = llm_result.get("recommendations")
+    if not recommendations_list or recommendations_list == ["No recommendations"]:
+        recommendations_list = extract_recommendations_from_summary(summary_text)
+
     item = {
         "correlation_id": correlation_id,
         "analysis_id": f"analysis_{int(time.time())}_{uuid.uuid4().hex[:8]}",
