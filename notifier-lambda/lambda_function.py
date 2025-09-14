@@ -1,7 +1,6 @@
 import boto3
 import os
 import json
-import re
 from datetime import datetime
 
 # -------- CONFIG --------
@@ -22,19 +21,8 @@ def log(level, message, **kwargs):
     payload.update(kwargs)
     print(json.dumps(payload))
 
-# -------- Helpers --------
-def extract_last_json(text):
-    """Extract the last JSON object from a string"""
-    matches = re.findall(r'\{.*?\}', text, re.DOTALL)
-    if not matches:
-        return {}
-    try:
-        return json.loads(matches[-1])
-    except json.JSONDecodeError:
-        return {}
-
+# -------- DynamoDB Retrieval --------
 def fetch_recent_analysis(correlation_id=None, limit=10):
-    """Fetch recent analysis items from DynamoDB"""
     table = dynamodb.Table(DDB_TABLE)
     scan_kwargs = {"Limit": limit}
     if correlation_id:
@@ -43,6 +31,7 @@ def fetch_recent_analysis(correlation_id=None, limit=10):
     response = table.scan(**scan_kwargs)
     return response.get("Items", [])
 
+# -------- SES Email --------
 def send_email(subject, body_text, body_html):
     if not SES_SENDER or not SES_RECIPIENTS:
         log("ERROR", "SES_not_configured")
@@ -84,22 +73,13 @@ def lambda_handler(event, context):
             key = anomaly.get("anomaly", "Unknown")
             top_anomalies[key] = top_anomalies.get(key, 0) + 1
 
-    # Extract the last executive summary JSON from DynamoDB items
-    last_summary_text = None
-    for item in reversed(items):
-        summary_field = item.get("summary")
-        if summary_field:
-            last_summary_text = summary_field
-            break
+    # Collect insights, recommendations, and summaries from DynamoDB
+    insights_list = [i for item in items for i in item.get("insights", [])]
+    recommendations_list = [r for item in items for r in item.get("recommendations", [])]
+    summaries = [item.get("summary") for item in items if item.get("summary")]
+    combined_summary = "\n".join(summaries) if summaries else "No summary available."
 
-    summary_json = extract_last_json(last_summary_text or "")
-
-    # Structured content
-    insights_list = summary_json.get("insights", [])
-    recommendations_list = summary_json.get("recommendations", [])
-    summary_text = summary_json.get("summary", "No summary available.")
-
-    # Build email
+    # Email content
     subject = f"Health Data Analysis Report ({datetime.utcnow().date()})"
     anomalies_text = "\n".join([f"- {k}: {v}" for k, v in top_anomalies.items()]) or "None"
 
@@ -110,7 +90,7 @@ def lambda_handler(event, context):
         f"Top Anomalies:\n{anomalies_text}\n\n"
         f"Insights:\n" + "\n".join(f"- {i}" for i in insights_list) + "\n\n"
         f"Recommendations:\n" + "\n".join(f"- {r}" for r in recommendations_list) + "\n\n"
-        f"Executive Summary:\n{summary_text}\n"
+        f"Executive Summary:\n{combined_summary}\n"
     )
 
     body_html = f"""
@@ -153,7 +133,7 @@ def lambda_handler(event, context):
     </ul>
 
     <div class="section-header">Executive Summary</div>
-    <p>{summary_text}</p>
+    <p>{combined_summary}</p>
     </body>
     </html>
     """
