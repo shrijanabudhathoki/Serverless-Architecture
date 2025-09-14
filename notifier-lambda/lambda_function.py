@@ -89,20 +89,36 @@ def extract_insights_and_recommendations(items):
     return unique_insights, unique_recommendations
 
 def format_executive_summary(items):
-    """Extract only the textual executive summary from items."""
+    """Extract health_status and key_findings from summary objects."""
     summaries = []
 
     for item in items:
         summary_value = item.get("summary")
 
+        text_summary = ""
+
         if isinstance(summary_value, dict):
-            # DynamoDB stored full JSON → extract the "summary" field
-            text_summary = summary_value.get("summary", "").strip()
+            # Extract health_status
+            health_status = summary_value.get("health_status", "")
+
+            # Extract key findings if present
+            key_findings = summary_value.get("key_findings", {})
+            findings_list = []
+
+            if isinstance(key_findings, dict):
+                for _, finding_text in key_findings.items():
+                    if isinstance(finding_text, str):
+                        findings_list.append(finding_text)
+
+            # Combine into one block of text
+            if health_status:
+                text_summary = health_status.strip()
+            if findings_list:
+                text_summary += " Key findings: " + " ".join(f.strip() for f in findings_list if f)
+
         elif isinstance(summary_value, str):
-            # Already a plain text summary
+            # Plain text already
             text_summary = summary_value.strip()
-        else:
-            text_summary = ""
 
         if text_summary and text_summary != "Analysis completed.":
             summaries.append(text_summary)
@@ -110,8 +126,9 @@ def format_executive_summary(items):
     if not summaries:
         return "Health data analysis completed successfully. Regular monitoring continues."
 
-    # If multiple summaries, prefer the first one
+    # Use only the first for executive summary
     return summaries
+
 
 # -------- SES Email --------
 def send_email(subject, body_text, body_html):
@@ -166,7 +183,7 @@ def lambda_handler(event, context):
     
     # Generate executive summary
     executive_summary = format_executive_summary(items)
-    executive_summary_html = executive_summary.replace("\n", "<br>")
+    executive_summary_html = str(executive_summary).replace("\n", "<br>")
 
 
     log("INFO", "email_data_prepared", 
