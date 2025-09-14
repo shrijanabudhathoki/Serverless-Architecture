@@ -3,6 +3,8 @@ import os
 import json
 from datetime import datetime
 from decimal import Decimal
+import re
+
 
 # -------- CONFIG --------
 dynamodb = boto3.resource("dynamodb")
@@ -63,6 +65,28 @@ Return only a clear plain-text summary without JSON brackets or quotes.
         log("ERROR", "bedrock_summary_failed", error=str(e))
         return "Executive summary could not be generated."
 
+# Flatten nested insights/recommendations
+def flatten_insights(insights):
+    result = []
+    for i in insights:
+        if isinstance(i, dict):
+            for k, v in i.items():
+                if isinstance(v, dict) or isinstance(v, list):
+                    v = json.dumps(v)
+                result.append(f"{k}: {v}")
+        else:
+            result.append(str(i))
+    return result
+
+# Clean executive summary text
+def clean_summary(summary_text):
+    summary_text = re.sub(r"^```json\s*|\s*```$", "", summary_text)
+    try:
+        s = json.loads(summary_text)
+        return s.get("summary", summary_text)
+    except:
+        return summary_text
+
 # -------- DynamoDB Retrieval --------
 def fetch_recent_analysis(correlation_id=None, limit=10):
     table = dynamodb.Table(DDB_TABLE)
@@ -116,10 +140,14 @@ def lambda_handler(event, context):
             top_anomalies[key] = top_anomalies.get(key, 0) + 1
 
     # Collect insights, recommendations, and **summary from DynamoDB**
-    insights_list = [i for item in items for i in item.get("insights", [])]
-    recommendations_list = [r for item in items for r in item.get("recommendations", [])]
-    summaries = [item.get("summary") for item in items if item.get("summary")]
+    # Flatten insights and recommendations
+    insights_list = [entry for item in items for entry in flatten_insights(item.get("insights", []))]
+    recommendations_list = [entry for item in items for entry in flatten_insights(item.get("recommendations", []))]
+
+    # Clean and combine summaries
+    summaries = [clean_summary(item.get("summary", "")) for item in items if item.get("summary")]
     combined_summary = "\n".join(summaries) if summaries else "No summary available."
+
 
     # Email content
     subject = f"Health Data Analysis Report ({datetime.utcnow().date()})"
