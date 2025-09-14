@@ -85,19 +85,51 @@ def format_insights_and_recommendations(items):
     formatted_recommendations = []
     
     for item in items:
-        # Get insights
+        log("DEBUG", "processing_item", item_keys=list(item.keys()))
+        
+        # Get insights - try different possible formats
         insights = item.get("insights", [])
+        if isinstance(insights, str):
+            try:
+                insights = json.loads(insights)
+            except:
+                insights = [insights] if insights else []
+        
         if insights and insights != ["No major trends observed"]:
             formatted_insights.extend(insights)
+            log("DEBUG", "found_insights", count=len(insights))
         
-        # Get recommendations  
-        recommendations = item.get("recommendations", [])
+        # Get recommendations - try different possible formats
+        recommendations = item.get("recommendations", [])  
+        if isinstance(recommendations, str):
+            try:
+                recommendations = json.loads(recommendations)
+            except:
+                recommendations = [recommendations] if recommendations else []
+                
         if recommendations and recommendations != ["No recommendations"]:
             formatted_recommendations.extend(recommendations)
+            log("DEBUG", "found_recommendations", count=len(recommendations))
+        
+        # Also try to parse from summary field
+        summary = item.get("summary", "")
+        if summary:
+            log("DEBUG", "parsing_summary", summary_length=len(summary))
+            insights_from_summary, recs_from_summary, _ = parse_json_summary(summary)
+            if insights_from_summary:
+                formatted_insights.extend(insights_from_summary)
+                log("DEBUG", "extracted_insights_from_summary", count=len(insights_from_summary))
+            if recs_from_summary:
+                formatted_recommendations.extend(recs_from_summary)
+                log("DEBUG", "extracted_recs_from_summary", count=len(recs_from_summary))
     
     # Remove duplicates while preserving order
     unique_insights = list(dict.fromkeys(formatted_insights))
     unique_recommendations = list(dict.fromkeys(formatted_recommendations))
+    
+    log("INFO", "insights_and_recs_processed", 
+        total_insights=len(unique_insights), 
+        total_recommendations=len(unique_recommendations))
     
     return unique_insights, unique_recommendations
 
