@@ -103,12 +103,22 @@ def analyze_with_llm(rows, anomalies):
     anomaly_summary = f"{len(anomalies)} anomalies detected in {len(rows)} records."
 
     prompt = (
-        "You are a health data analysis assistant.\n"
-        "Given the following sample health records and anomaly summary, "
-        "provide overall insights, recommendations, and an executive summary.\n\n"
-        f"Sample records: {sample_text}\n"
-        f"Anomaly summary: {anomaly_summary}\n\n"
-        "Return JSON with keys: insights, recommendations, summary.\n"
+        "You are a health data analysis assistant. "
+        "You receive health metrics for multiple users over time, including heart rate, SpO2, temperature, blood pressure, and steps. "
+        "Your task is to analyze this dataset and provide a structured report.\n\n"
+
+        "1. Identify overall trends and patterns in the dataset (e.g., average heart rate, typical activity levels, common anomalies).\n"
+        "2. Summarize any significant anomalies and what they might indicate about health risks.\n"
+        "3. Provide actionable recommendations for users or healthcare providers based on the data.\n"
+        "4. Generate an executive summary suitable for reporting to non-technical stakeholders.\n"
+        "5. Return the analysis in JSON format with the following keys:\n"
+        "   - insights: List of key observations from the dataset.\n"
+        "   - recommendations: List of suggested actions or interventions.\n"
+        "   - summary: Concise executive summary of the findings.\n\n"
+
+        f"Sample health records (first 20 rows):\n{sample_text}\n\n"
+        f"Anomaly summary:\n{anomaly_summary}\n\n"
+        "Provide your output in valid JSON format only."
     )
 
     response = bedrock.invoke_model(
