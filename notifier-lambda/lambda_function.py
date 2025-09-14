@@ -281,6 +281,7 @@ If you have concerns about any anomalies, please consult with a healthcare profe
             }}
             .metric {{ 
                 text-align: center; 
+                margin: 0 15px
             }}
             .metric-number {{ 
                 font-size: 32px; 
