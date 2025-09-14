@@ -405,7 +405,7 @@ If you have concerns about any anomalies, please consult with a healthcare profe
 
             <div class="summary-box">
                 <h3>📊 Executive Summary</h3>
-                <p>{executive_summary_html}</p>
+                <p>{executive_summary}</p>
             </div>
 
             <div class="footer">
