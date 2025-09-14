@@ -115,25 +115,22 @@ def lambda_handler(event, context):
             key = anomaly.get("anomaly", "Unknown")
             top_anomalies[key] = top_anomalies.get(key, 0) + 1
 
-    # Convert anomalies into bullet points
-    anomalies_text = "\n".join([f"- {k}: {v}" for k, v in top_anomalies.items()]) or "None"
-
-    # Generate executive summary
-    anomalies_list = [a.get("anomaly") for item in items for a in item.get("anomalies", [])]
+    # Collect insights, recommendations, and **summary from DynamoDB**
     insights_list = [i for item in items for i in item.get("insights", [])]
     recommendations_list = [r for item in items for r in item.get("recommendations", [])]
-
-    executive_summary = generate_summary(anomalies_list, insights_list, recommendations_list)
+    summaries = [item.get("summary") for item in items if item.get("summary")]
+    combined_summary = "\n".join(summaries) if summaries else "No summary available."
 
     # Email content
     subject = f"Health Data Analysis Report ({datetime.utcnow().date()})"
+    anomalies_text = "\n".join([f"- {k}: {v}" for k, v in top_anomalies.items()]) or "None"
 
     body_text = (
         f"Health Data Analysis Summary\n\n"
         f"Total Rows Processed: {total_rows}\n"
         f"Total Anomalies Detected: {total_anomalies}\n"
         f"Top Anomalies:\n{anomalies_text}\n\n"
-        f"Executive Summary:\n{executive_summary}\n"
+        f"Executive Summary:\n{combined_summary}\n"
     )
 
     body_html = f"""
@@ -148,12 +145,11 @@ def lambda_handler(event, context):
         {''.join(f"<li>{k}: {v}</li>" for k, v in top_anomalies.items()) or "<li>None</li>"}
       </ul>
       <h3 style="color:#117A65;">Executive Summary:</h3>
-      <p>{executive_summary}</p>
+      <p>{combined_summary}</p>
     </body>
     </html>
     """
 
-    # Send email
     send_email(subject, body_text, body_html)
 
     return {"status": "success", "total_rows": total_rows, "total_anomalies": total_anomalies}
