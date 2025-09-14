@@ -89,36 +89,31 @@ def extract_insights_and_recommendations(items):
     return unique_insights, unique_recommendations
 
 def format_executive_summary(items):
-    """Extract health_status and key_findings from summary objects."""
     summaries = []
 
     for item in items:
-        summary_value = item.get("summary")
-
+        summary_val = item.get("summary", {})
         text_summary = ""
 
-        if isinstance(summary_value, dict):
-            # Extract health_status
-            health_status = summary_value.get("health_status", "")
+        if isinstance(summary_val, dict):
+            # Extract only health_status + key_findings
+            health_status = summary_val.get("health_status", "")
+            key_findings = summary_val.get("key_findings", {})
 
-            # Extract key findings if present
-            key_findings = summary_value.get("key_findings", {})
-            findings_list = []
-
+            findings_texts = []
             if isinstance(key_findings, dict):
-                for _, finding_text in key_findings.items():
-                    if isinstance(finding_text, str):
-                        findings_list.append(finding_text)
+                for v in key_findings.values():
+                    if isinstance(v, str):
+                        findings_texts.append(v)
 
-            # Combine into one block of text
             if health_status:
                 text_summary = health_status.strip()
-            if findings_list:
-                text_summary += " Key findings: " + " ".join(f.strip() for f in findings_list if f)
+            if findings_texts:
+                text_summary += " Key findings: " + " ".join(f.strip() for f in findings_texts)
 
-        elif isinstance(summary_value, str):
-            # Plain text already
-            text_summary = summary_value.strip()
+        elif isinstance(summary_val, str):
+            # Old format: if summary is already a plain string
+            text_summary = summary_val.strip()
 
         if text_summary and text_summary != "Analysis completed.":
             summaries.append(text_summary)
@@ -126,8 +121,8 @@ def format_executive_summary(items):
     if not summaries:
         return "Health data analysis completed successfully. Regular monitoring continues."
 
-    # Use only the first for executive summary
-    return summaries
+    # Only use the first one
+    return "\n".join(summaries)
 
 
 # -------- SES Email --------
@@ -183,7 +178,7 @@ def lambda_handler(event, context):
     
     # Generate executive summary
     executive_summary = format_executive_summary(items)
-    # executive_summary_html = str(executive_summary).replace("\n", "<br>")
+    executive_summary_html = str(executive_summary).replace("\n", "<br>")
 
 
     log("INFO", "email_data_prepared", 
@@ -235,7 +230,7 @@ If you have concerns about any anomalies, please consult with a healthcare profe
     recommendations_html = "".join([f"<li>{rec}</li>" for rec in recommendations[:10]]) or "<li style='color: #7F8C8D;'>Continue regular health monitoring</li>"
 
     # Format executive summary for HTML (preserve line breaks)
-    # executive_summary_html = executive_summary.replace('\n', '<br>')
+    executive_summary_html = executive_summary.replace('\n', '<br>')
 
     body_html = f"""
     <!DOCTYPE html>
@@ -405,7 +400,7 @@ If you have concerns about any anomalies, please consult with a healthcare profe
 
             <div class="summary-box">
                 <h3>📊 Executive Summary</h3>
-                <p>{executive_summary}</p>
+                <p>{executive_summary_html}</p>
             </div>
 
             <div class="footer">
