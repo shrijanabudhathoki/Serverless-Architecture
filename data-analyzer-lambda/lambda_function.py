@@ -166,50 +166,28 @@ def analyze_with_llm(rows, anomalies):
         "Return only valid JSON."
     )
 
-    try:
-        response = bedrock.invoke_model(
-            modelId=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-3-sonnet-20240229-v1:0"),
-            contentType="application/json",
-            accept="application/json",
-            body=json.dumps({
-                "messages": [
-                    {"role": "user", "content": [{"text": prompt}]}
-                ],
-                "inferenceConfig": {"maxTokens": 800, "temperature": 0.3}
-            })
-        )
-        raw = response["body"].read()
-        payload = json.loads(raw)
-        output_text = payload["output"]["message"]["content"][0]["text"]
-
-        # Clean up the output text (remove markdown formatting if present)
-        if output_text.startswith('```json'):
-            output_text = output_text.replace('```json', '').replace('```', '').strip()
-        
-        result = json.loads(output_text)
-        log("INFO", "llm_analysis_success", insights_count=len(result.get("insights", [])), recommendations_count=len(result.get("recommendations", [])))
-        
-    except Exception as e:
-        log("ERROR", "llm_analysis_failed", error=str(e))
-        # Fallback analysis based on statistics
-        result = {
-            "insights": [
-                f"Average heart rate is {stats.get('avg_heart_rate', 0)} bpm with range from {stats.get('min_heart_rate', 0)} to {stats.get('max_heart_rate', 0)} bpm",
-                f"Average SpO2 level is {stats.get('avg_spo2', 0)}% with minimum reading of {stats.get('min_spo2', 0)}%",
-                f"Average temperature is {stats.get('avg_temp', 0)}°C with maximum of {stats.get('max_temp', 0)}°C",
-                f"Average blood pressure is {stats.get('avg_systolic', 0)}/{stats.get('avg_diastolic', 0)} mmHg",
-                f"Daily activity averages {stats.get('avg_steps', 0)} steps per record"
+    response = bedrock.invoke_model(
+        modelId=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-3-sonnet-20240229-v1:0"),
+        contentType="application/json",
+        accept="application/json",
+        body=json.dumps({
+            "messages": [
+                {"role": "user", "content": [{"text": prompt}]}
             ],
-            "recommendations": [
-                "Monitor heart rate trends, especially readings above 160 bpm or below 60 bpm",
-                "Ensure SpO2 levels stay above 95% and seek medical attention if consistently lower",
-                "Track temperature patterns and address fevers above 38°C promptly",
-                "Regular blood pressure monitoring recommended for readings above 140/90 mmHg",
-                "Maintain regular physical activity to support cardiovascular health"
-            ],
-            "summary": f"Health monitoring analysis of {len(rows)} records shows {len(anomalies)} anomalies requiring attention. Key metrics indicate cardiovascular activity levels and potential areas for health optimization."
-        }
+            "inferenceConfig": {"maxTokens": 800, "temperature": 0.3}
+        })
+    )
+    raw = response["body"].read()
+    payload = json.loads(raw)
+    output_text = payload["output"]["message"]["content"][0]["text"]
 
+    # Clean up the output text (remove markdown formatting if present)
+    if output_text.startswith('```json'):
+        output_text = output_text.replace('```json', '').replace('```', '').strip()
+    
+    result = json.loads(output_text)
+    log("INFO", "llm_analysis_success", insights_count=len(result.get("insights", [])), recommendations_count=len(result.get("recommendations", [])))
+        
     return {
         "insights": result.get("insights", []),
         "recommendations": result.get("recommendations", []),
