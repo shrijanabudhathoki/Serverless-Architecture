@@ -133,6 +133,27 @@ def send_email(subject, body_text, body_html):
         log("ERROR", "email_failed", error=str(e))
         return False
 
+def format_executive_summary(items):
+    """Extract only the summary field from DynamoDB items"""
+    summaries = []
+
+    for item in items:
+        summary = item.get("summary", "").strip()
+        if summary and summary != "Analysis completed.":
+            summaries.append(summary)
+
+    if not summaries:
+        return "Health data analysis completed successfully. Regular monitoring continues."
+
+    # Combine all summaries into one text
+    # But if too long, take only the first summary
+    combined_summary = " ".join(summaries)
+    if len(combined_summary) > 500:
+        combined_summary = summaries[0]
+
+    return combined_summary
+
+
 # -------- Lambda Handler --------
 def lambda_handler(event, context):
     correlation_id = event.get("correlation_id")  # optional filter
@@ -161,6 +182,8 @@ def lambda_handler(event, context):
     
     # Generate executive summary
     executive_summary = format_executive_summary(items)
+    executive_summary_html = executive_summary.replace("\n", "<br>")
+
 
     log("INFO", "email_data_prepared", 
         total_rows=total_rows, 
