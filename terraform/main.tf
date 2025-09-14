@@ -577,7 +577,7 @@ resource "aws_codebuild_project" "ci" {
 
   source {
     type      = "CODEPIPELINE"
-    buildspec = "ingestion/terraform/Buildspec/buildspec-ci.yml"
+    buildspec = "terraform/Buildspec/buildspec-ci.yml"
   }
 }
 
@@ -599,7 +599,7 @@ resource "aws_codebuild_project" "deploy" {
 
   source {
     type      = "CODEPIPELINE"
-    buildspec = "ingestion/terraform/Buildspec/buildspec-deploy.yml"
+    buildspec = "terraform/Buildspec/buildspec-deploy.yml"
   }
 }
 
