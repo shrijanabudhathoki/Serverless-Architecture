@@ -183,7 +183,7 @@ def lambda_handler(event, context):
     
     # Generate executive summary
     executive_summary = format_executive_summary(items)
-    executive_summary_html = str(executive_summary).replace("\n", "<br>")
+    # executive_summary_html = str(executive_summary).replace("\n", "<br>")
 
 
     log("INFO", "email_data_prepared", 
