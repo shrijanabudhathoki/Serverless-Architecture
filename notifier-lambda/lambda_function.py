@@ -1,21 +1,16 @@
 import boto3
 import os
 import json
-from datetime import datetime
-from decimal import Decimal
 import re
-
+from datetime import datetime
 
 # -------- CONFIG --------
 dynamodb = boto3.resource("dynamodb")
 ses = boto3.client("ses")
-bedrock = boto3.client("bedrock-runtime")
 
 DDB_TABLE = os.environ.get("DDB_TABLE", "health_analysis")
 SES_SENDER = os.environ.get("SES_SENDER")
 SES_RECIPIENTS = os.environ.get("SES_RECIPIENTS", "").split(",")
-BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID")
-BEDROCK_MAX_TOKENS = int(os.environ.get("BEDROCK_MAX_TOKENS", 500))
 
 # -------- Logging --------
 def log(level, message, **kwargs):
@@ -27,68 +22,19 @@ def log(level, message, **kwargs):
     payload.update(kwargs)
     print(json.dumps(payload))
 
-# -------- Bedrock Executive Summary --------
-def generate_summary(anomalies, insights, recommendations):
-    prompt = f"""
-You are a health data assistant. 
-Summarize the following analysis for an executive audience. Focus on key anomalies, trends, and recommendations.
-
-Anomalies: {json.dumps(anomalies)}
-Insights: {json.dumps(insights)}
-Recommendations: {json.dumps(recommendations)}
-
-Return only a clear plain-text summary without JSON brackets or quotes.
-"""
+# -------- Helpers --------
+def extract_last_json(text):
+    """Extract the last JSON object from a string"""
+    matches = re.findall(r'\{.*?\}', text, re.DOTALL)
+    if not matches:
+        return {}
     try:
-        response = bedrock.invoke_model(
-            modelId=BEDROCK_MODEL_ID,
-            contentType="application/json",
-            body=json.dumps({
-                "messages": [{"role": "user", "content": [{"text": prompt}]}],
-                "inferenceConfig": {"maxTokens": BEDROCK_MAX_TOKENS, "temperature": 0.5}
-            })
-        )
-        raw = response["body"].read()
-        payload = json.loads(raw)
-        output_text = payload["output"]["message"]["content"][0]["text"]
+        return json.loads(matches[-1])
+    except json.JSONDecodeError:
+        return {}
 
-        # Clean JSON-like wrappers if present
-        cleaned = output_text.strip()
-        if cleaned.startswith("{") and cleaned.endswith("}"):
-            try:
-                obj = json.loads(cleaned)
-                cleaned = obj.get("summary", cleaned)
-            except Exception:
-                pass
-        return cleaned
-    except Exception as e:
-        log("ERROR", "bedrock_summary_failed", error=str(e))
-        return "Executive summary could not be generated."
-
-# Flatten nested insights/recommendations
-def flatten_insights(insights):
-    result = []
-    for i in insights:
-        if isinstance(i, dict):
-            for k, v in i.items():
-                if isinstance(v, dict) or isinstance(v, list):
-                    v = json.dumps(v)
-                result.append(f"{k}: {v}")
-        else:
-            result.append(str(i))
-    return result
-
-# Clean executive summary text
-def clean_summary(summary_text):
-    summary_text = re.sub(r"^```json\s*|\s*```$", "", summary_text)
-    try:
-        s = json.loads(summary_text)
-        return s.get("summary", summary_text)
-    except:
-        return summary_text
-
-# -------- DynamoDB Retrieval --------
 def fetch_recent_analysis(correlation_id=None, limit=10):
+    """Fetch recent analysis items from DynamoDB"""
     table = dynamodb.Table(DDB_TABLE)
     scan_kwargs = {"Limit": limit}
     if correlation_id:
@@ -97,7 +43,6 @@ def fetch_recent_analysis(correlation_id=None, limit=10):
     response = table.scan(**scan_kwargs)
     return response.get("Items", [])
 
-# -------- SES Email --------
 def send_email(subject, body_text, body_html):
     if not SES_SENDER or not SES_RECIPIENTS:
         log("ERROR", "SES_not_configured")
@@ -139,17 +84,22 @@ def lambda_handler(event, context):
             key = anomaly.get("anomaly", "Unknown")
             top_anomalies[key] = top_anomalies.get(key, 0) + 1
 
-    # Collect insights, recommendations, and **summary from DynamoDB**
-    # Flatten insights and recommendations
-    insights_list = [entry for item in items for entry in flatten_insights(item.get("insights", []))]
-    recommendations_list = [entry for item in items for entry in flatten_insights(item.get("recommendations", []))]
+    # Extract the last executive summary JSON from DynamoDB items
+    last_summary_text = None
+    for item in reversed(items):
+        summary_field = item.get("summary")
+        if summary_field:
+            last_summary_text = summary_field
+            break
 
-    # Clean and combine summaries
-    summaries = [clean_summary(item.get("summary", "")) for item in items if item.get("summary")]
-    combined_summary = "\n".join(summaries) if summaries else "No summary available."
+    summary_json = extract_last_json(last_summary_text or "")
 
+    # Structured content
+    insights_list = summary_json.get("insights", [])
+    recommendations_list = summary_json.get("recommendations", [])
+    summary_text = summary_json.get("summary", "No summary available.")
 
-    # Email content
+    # Build email
     subject = f"Health Data Analysis Report ({datetime.utcnow().date()})"
     anomalies_text = "\n".join([f"- {k}: {v}" for k, v in top_anomalies.items()]) or "None"
 
@@ -158,7 +108,9 @@ def lambda_handler(event, context):
         f"Total Rows Processed: {total_rows}\n"
         f"Total Anomalies Detected: {total_anomalies}\n"
         f"Top Anomalies:\n{anomalies_text}\n\n"
-        f"Executive Summary:\n{combined_summary}\n"
+        f"Insights:\n" + "\n".join(f"- {i}" for i in insights_list) + "\n\n"
+        f"Recommendations:\n" + "\n".join(f"- {r}" for r in recommendations_list) + "\n\n"
+        f"Executive Summary:\n{summary_text}\n"
     )
 
     body_html = f"""
@@ -201,7 +153,7 @@ def lambda_handler(event, context):
     </ul>
 
     <div class="section-header">Executive Summary</div>
-    <p>{combined_summary}</p>
+    <p>{summary_text}</p>
     </body>
     </html>
     """
