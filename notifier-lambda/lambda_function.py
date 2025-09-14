@@ -113,7 +113,6 @@ def format_executive_summary(items):
     # If multiple summaries, prefer the first one
     return summaries
 
-
 # -------- SES Email --------
 def send_email(subject, body_text, body_html):
     if not SES_SENDER or not SES_RECIPIENTS:
@@ -137,26 +136,6 @@ def send_email(subject, body_text, body_html):
     except Exception as e:
         log("ERROR", "email_failed", error=str(e))
         return False
-
-def format_executive_summary(items):
-    """Extract only the summary field from DynamoDB items"""
-    summaries = []
-
-    for item in items:
-        summary = item.get("summary", "").strip()
-        if summary and summary != "Analysis completed.":
-            summaries.append(summary)
-
-    if not summaries:
-        return "Health data analysis completed successfully. Regular monitoring continues."
-
-    # Combine all summaries into one text
-    # But if too long, take only the first summary
-    combined_summary = " ".join(summaries)
-    if len(combined_summary) > 500:
-        combined_summary = summaries[0]
-
-    return combined_summary
 
 
 # -------- Lambda Handler --------
