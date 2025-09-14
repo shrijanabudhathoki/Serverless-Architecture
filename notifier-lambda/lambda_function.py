@@ -89,25 +89,22 @@ def extract_insights_and_recommendations(items):
     return unique_insights, unique_recommendations
 
 def format_executive_summary(items):
-    """Format executive summary from analysis summaries"""
+    """Extract only the summary text from the stored JSON in DynamoDB"""
     summaries = []
     
     for item in items:
-        summary = item.get("summary", "")
-        if summary and summary != "Analysis completed.":
-            summaries.append(summary)
+        summary_json = item.get("summary")
+        if isinstance(summary_json, dict) and "summary" in summary_json:
+            summaries.append(summary_json["summary"])
+        elif isinstance(summary_json, str):
+            summaries.append(summary_json)
     
     if not summaries:
         return "Health data analysis completed successfully. Regular monitoring continues."
     
-    # Combine summaries into a coherent executive summary
-    combined_summary = " ".join(summaries)
-    
-    # If too long, take first summary
-    if len(combined_summary) > 500:
-        combined_summary = summaries[0] if summaries else "Analysis completed successfully."
-    
-    return combined_summary
+    # Use only the first summary if multiple
+    return summaries[0]
+
 
 # -------- SES Email --------
 def send_email(subject, body_text, body_html):
