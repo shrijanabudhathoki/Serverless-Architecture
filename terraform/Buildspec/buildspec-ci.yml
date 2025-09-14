@@ -18,4 +18,4 @@ phases:
       - terraform init -backend=false
       - terraform validate
       - echo "Running pytest for data-ingestor-lambda"
-      - pytest ../../data-ingestor-lambda/test_validation.py
+      - pytest data-ingestor-lambda/test_validation.py
