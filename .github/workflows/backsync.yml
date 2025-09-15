@@ -1,0 +1,33 @@
+name: Create PR from UAT to Main
+
+on:
+  push:
+    branches:
+      - uat
+
+jobs:
+  create-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: uat
+
+      - name: Set up Git
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Create Pull Request to Main
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'Sync UAT changes to Main'
+          branch: sync-uat-to-main # Temporary branch for PR
+          base: main
+          head: uat
+          title: 'Sync UAT changes to Main'
+          body: 'Automated PR to merge changes from UAT to Main branch.'
+          labels: 'auto-sync'
+          draft: false
