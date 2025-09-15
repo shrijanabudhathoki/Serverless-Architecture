@@ -429,51 +429,66 @@ If you have concerns about any anomalies, please consult with a healthcare profe
     <body>
         <div class="container">
             <div class="header">
+                <div class="health-icon">🏥</div>
                 <h1>Health Data Analysis Report</h1>
                 <p class="subtitle">Generated on {datetime.utcnow().strftime('%B %d, %Y at %I:%M %p UTC')}</p>
                 <div class="timestamp-info">
-                    Latest analysis: {items[0].get('analysis_timestamp', 'Unknown') if items else 'Unknown'}<br>
-                    Analysis period: {len(items)} recent runs
+                    <strong>Latest analysis:</strong> {items[0].get('analysis_timestamp', 'Unknown') if items else 'Unknown'}<br>
+                    <strong>Analysis period:</strong> {len(items)} recent runs
                 </div>
             </div>
 
-            <div class="metrics">
-                <div class="metric">
-                    <span class="metric-number">{total_rows:,}</span>
-                    <span class="metric-label">Records Processed</span>
+            <div class="content">
+                <div class="metrics">
+                    <div class="metric">
+                        <span class="metric-number">{total_rows:,}</span>
+                        <span class="metric-label">Records Processed</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-number">{total_anomalies:,}</span>
+                        <span class="metric-label">Anomalies Detected</span>
+                    </div>
                 </div>
-                <div class="metric">
-                    <span class="metric-number">{total_anomalies:,}</span>
-                    <span class="metric-label">Anomalies Detected</span>
+
+                <div class="section">
+                    <h2>🔍 Top Health Anomalies</h2>
+                    <div class="anomaly-table">
+                        <table>
+                            <tr>
+                                <th>Health Anomaly</th>
+                                <th style="text-align: center;">Frequency</th>
+                            </tr>
+                            {anomalies_table_rows}
+                        </table>
+                    </div>
                 </div>
-            </div>
 
-            <h2>🔍 Top Health Anomalies</h2>
-            <table>
-                <tr>
-                    <th>Health Anomaly</th>
-                    <th style="text-align: center;">Frequency</th>
-                </tr>
-                {anomalies_table_rows}
-            </table>
+                <div class="section">
+                    <h2>💡 Key Health Insights</h2>
+                    <div class="insights-list">
+                        <ul>
+                            {insights_html}
+                        </ul>
+                    </div>
+                </div>
 
-            <h2>💡 Key Health Insights</h2>
-            <ul>
-                {insights_html}
-            </ul>
+                <div class="section">
+                    <h2>📋 Recommended Actions</h2>
+                    <div class="recommendations-list">
+                        <ul>
+                            {recommendations_html}
+                        </ul>
+                    </div>
+                </div>
 
-            <h2>📋 Recommended Actions</h2>
-            <ul>
-                {recommendations_html}
-            </ul>
-
-            <div class="summary-box">
-                <h3>📊 Executive Summary</h3>
-                <p>{executive_summary_html}</p>
+                <div class="summary-box">
+                    <h3>📊 Executive Summary</h3>
+                    <p>{executive_summary_html}</p>
+                </div>
             </div>
 
             <div class="footer">
-                <p>This report is automatically generated from your health monitoring system.<br>
+                <p><strong>Important:</strong> This report is automatically generated from your health monitoring system.<br>
                 If you have concerns about any anomalies, please consult with a healthcare professional.</p>
             </div>
         </div>
