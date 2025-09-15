@@ -1,6 +1,5 @@
 name: Backsync UAT to Main
 
-# Trigger workflow on push to uat branch
 on:
   push:
     branches:
@@ -9,40 +8,29 @@ on:
 jobs:
   create-pr:
     runs-on: ubuntu-latest
-
     steps:
-      # Step 1: Checkout the repository
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # fetch full history
+          fetch-depth: 0
 
-      # Step 2: Install GitHub CLI
       - name: Install GitHub CLI
         run: |
           sudo apt update
           sudo apt install -y gh
 
-      # Step 3: Fetch the main branch
       - name: Fetch main branch
         run: |
           git fetch origin main:main
 
-      # Step 4: Create or update PR from uat to main
-      - name: Create or update PR from uat to main
+      - name: Create PR from uat to main
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          PR_URL=$(gh pr list --base main --head uat --json url -q '.[0].url')
-
-          if [ -z "$PR_URL" ]; then
-            gh pr create \
-              --base main \
-              --head uat \
-              --title "Backsync UAT changes to Main" \
-              --body "Automated PR to merge latest UAT changes into Main branch." \
-              --label "auto-sync"
-          else
-            echo "PR already exists: $PR_URL"
-          fi
-
+          # Attempt to create PR; if it exists, just print message
+          gh pr create \
+            --base main \
+            --head uat \
+            --title "Backsync UAT changes to Main" \
+            --body "Automated PR to merge latest UAT changes into Main branch." \
+            --label "auto-sync" || echo "PR may already exist"
