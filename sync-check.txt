@@ -1,2 +1,0 @@
-test for git back sync
-test sync
