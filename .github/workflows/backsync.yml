@@ -35,13 +35,12 @@ jobs:
         run: |
           git fetch origin main:main
 
-      # Step 5: Create or update Pull Request
       - name: Create or update PR from uat to main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Check if a PR already exists
           PR_URL=$(gh pr list --base main --head uat --json url -q '.[0].url')
           if [ -z "$PR_URL" ]; then
-            # Create a new PR
             gh pr create \
               --base main \
               --head uat \
@@ -51,3 +50,4 @@ jobs:
           else
             echo "PR already exists: $PR_URL"
           fi
+
