@@ -1,5 +1,4 @@
 name: Create PR from UAT to Main
-
 on:
   push:
     branches:
@@ -12,22 +11,34 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: uat
-          fetch-depth: 0 # Fetch all history for all branches and tags
+          fetch-depth: 0
 
-      - name: Set up Git
+      - name: Check if PR already exists
+        id: check-pr
         run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          existing_pr=$(gh pr list --base main --head uat --json number --jq '.[0].number')
+          if [ "$existing_pr" != "null" ] && [ "$existing_pr" != "" ]; then
+            echo "pr_exists=true" >> $GITHUB_OUTPUT
+            echo "pr_number=$existing_pr" >> $GITHUB_OUTPUT
+          else
+            echo "pr_exists=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create Pull Request to Main
-        uses: peter-evans/create-pull-request@v5
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: 'Sync UAT changes to Main'
-          branch: sync-uat-to-main # Temporary branch for PR
-          base: main
-          title: 'Sync UAT changes to Main'
-          body: 'Automated PR to merge changes from UAT to Main branch.'
-          labels: 'auto-sync'
-          draft: false
+      - name: Create Pull Request
+        if: steps.check-pr.outputs.pr_exists == 'false'
+        run: |
+          gh pr create \
+            --base main \
+            --head uat \
+            --title "Sync UAT changes to Main" \
+            --body "Automated PR to merge changes from UAT to Main branch." \
+            --label auto-sync
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update existing PR
+        if: steps.check-pr.outputs.pr_exists == 'true'
+        run: |
+          echo "PR #${{ steps.check-pr.outputs.pr_number }} already exists and will be automatically updated"
