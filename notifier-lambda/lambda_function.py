@@ -5,20 +5,17 @@ from datetime import datetime
 from decimal import Decimal
 
 # -------- CONFIG --------
-dynamodb = boto3.resource("dynamodb")
+s3 = boto3.client("s3")
 ses = boto3.client("ses")
 
-DDB_TABLE = os.environ.get("DDB_TABLE", "health_analysis")
+BUCKET_NAME = os.environ.get("BUCKET_NAME")  # S3 bucket where analyses are stored
 SES_SENDER = os.environ.get("SES_SENDER")
 SES_RECIPIENTS = os.environ.get("SES_RECIPIENTS", "").split(",")
 
 # -------- Logging --------
 def log(level, message, **kwargs):
-    from decimal import Decimal
-
     def convert(obj):
         if isinstance(obj, Decimal):
-            # Convert integer-like Decimals to int, others to float
             return int(obj) if obj % 1 == 0 else float(obj)
         elif isinstance(obj, dict):
             return {k: convert(v) for k, v in obj.items()}
@@ -36,101 +33,56 @@ def log(level, message, **kwargs):
     safe_payload = convert(payload)
     print(json.dumps(safe_payload))
 
-# -------- DynamoDB Retrieval --------
-def fetch_recent_analysis(correlation_id=None, limit=10):
-    table = dynamodb.Table(DDB_TABLE)
-    scan_kwargs = {"Limit": limit}
-    if correlation_id:
-        scan_kwargs["FilterExpression"] = "correlation_id = :cid"
-        scan_kwargs["ExpressionAttributeValues"] = {":cid": correlation_id}
-    
-    response = table.scan(**scan_kwargs)
-    items = response.get("Items", [])
-    
-    log("INFO", "fetched_items", 
-        count=len(items),
-        correlation_id=correlation_id,
-        sample_keys=list(items[0].keys()) if items else [])
-    
-    return items
+# -------- S3 Retrieval --------
+def fetch_analysis_from_s3(analysis_key):
+    try:
+        obj = s3.get_object(Bucket=BUCKET_NAME, Key=analysis_key)
+        content = obj["Body"].read().decode("utf-8")
+        return json.loads(content)
+    except Exception as e:
+        log("ERROR", "failed_to_fetch_analysis", analysis_key=analysis_key, error=str(e))
+        raise
 
 # -------- Helper Functions --------
 def extract_insights_and_recommendations(items):
-    """Extract insights and recommendations from DynamoDB items"""
-    all_insights = []
-    all_recommendations = []
-    
+    all_insights, all_recommendations = [], []
     for item in items:
-        log("DEBUG", "processing_item", 
-            correlation_id=item.get("correlation_id", "unknown"),
-            has_insights=bool(item.get("insights")),
-            has_recommendations=bool(item.get("recommendations")))
-        
-        # Extract insights
         insights = item.get("insights", [])
-        if insights and isinstance(insights, list) and insights != ["No major trends observed"]:
+        if insights and insights != ["No major trends observed"]:
             all_insights.extend(insights)
-            log("DEBUG", "added_insights", count=len(insights))
-        
-        # Extract recommendations  
         recommendations = item.get("recommendations", [])
-        if recommendations and isinstance(recommendations, list) and recommendations != ["No recommendations"]:
+        if recommendations and recommendations != ["No recommendations"]:
             all_recommendations.extend(recommendations)
-            log("DEBUG", "added_recommendations", count=len(recommendations))
-    
-    # Remove duplicates while preserving order
-    unique_insights = list(dict.fromkeys(all_insights))
-    unique_recommendations = list(dict.fromkeys(all_recommendations))
-    
-    log("INFO", "extracted_data", 
-        total_insights=len(unique_insights), 
-        total_recommendations=len(unique_recommendations))
-    
-    return unique_insights, unique_recommendations
+    return list(dict.fromkeys(all_insights)), list(dict.fromkeys(all_recommendations))
 
 def format_executive_summary(items):
     summaries = []
-
     for item in items:
-        summary_val = item.get("summary", {})
-        text_summary = ""
-
+        summary_val = item.get("summary", "")
         if isinstance(summary_val, dict):
-            # Extract only health_status + key_findings
             health_status = summary_val.get("health_status", "")
             key_findings = summary_val.get("key_findings", {})
-
             findings_texts = []
             if isinstance(key_findings, dict):
                 for v in key_findings.values():
                     if isinstance(v, str):
                         findings_texts.append(v)
-
-            if health_status:
-                text_summary = health_status.strip()
+            text_summary = health_status.strip()
             if findings_texts:
-                text_summary += " Key findings: " + " ".join(f.strip() for f in findings_texts)
-
+                text_summary += " Key findings: " + " ".join(findings_texts)
         elif isinstance(summary_val, str):
-            # Old format: if summary is already a plain string
             text_summary = summary_val.strip()
-
         if text_summary and text_summary != "Analysis completed.":
             summaries.append(text_summary)
-
     if not summaries:
         return "Health data analysis completed successfully. Regular monitoring continues."
-
-    # Only use the first one
     return "\n".join(summaries)
-
 
 # -------- SES Email --------
 def send_email(subject, body_text, body_html):
     if not SES_SENDER or not SES_RECIPIENTS:
         log("ERROR", "SES_not_configured")
         return False
-
     try:
         ses.send_email(
             Source=SES_SENDER,
@@ -149,52 +101,55 @@ def send_email(subject, body_text, body_html):
         log("ERROR", "email_failed", error=str(e))
         return False
 
-
 # -------- Lambda Handler --------
 def lambda_handler(event, context):
-    correlation_id = event.get("correlation_id")  # optional filter
-    items = fetch_recent_analysis(correlation_id=correlation_id, limit=5)
+    """
+    Expects EventBridge event:
+    {
+        "detail": {
+            "analysis_key": "analyzed/file_analysis.json",
+            "correlation_id": "bucket/key@version",
+            ...
+        }
+    }
+    """
+    detail = event.get("detail", {})
+    analysis_key = detail.get("analysis_key")
+    correlation_id = detail.get("correlation_id", "unknown")
 
-    if not items:
-        log("INFO", "no_analysis_found", correlation_id=correlation_id)
-        return {"status": "no_data", "message": "No analysis data found"}
+    if not analysis_key:
+        log("ERROR", "missing_analysis_key", event=event)
+        return {"status": "failed", "reason": "missing analysis_key"}
+
+    log("INFO", "fetching_analysis", analysis_key=analysis_key, correlation_id=correlation_id)
+
+    # Fetch the analysis from S3
+    analysis_data = fetch_analysis_from_s3(analysis_key)
+    items = [analysis_data]  # wrap in list to reuse existing helpers
 
     # Aggregate row counts and anomalies
-    total_rows = sum(item.get("records_analyzed", 0) for item in items)
-    total_anomalies = sum(len(item.get("anomalies", [])) for item in items)
+    total_rows = analysis_data.get("records_analyzed", 0)
+    total_anomalies = len(analysis_data.get("anomalies", []))
 
     # Build anomaly frequency
     top_anomalies = {}
-    for item in items:
-        for anomaly in item.get("anomalies", []):
-            key = anomaly.get("anomaly", "Unknown")
-            top_anomalies[key] = top_anomalies.get(key, 0) + 1
-
-    # Sort anomalies by frequency (most common first)
+    for anomaly in analysis_data.get("anomalies", []):
+        key = anomaly.get("anomaly", "Unknown")
+        top_anomalies[key] = top_anomalies.get(key, 0) + 1
     sorted_anomalies = sorted(top_anomalies.items(), key=lambda x: x[1], reverse=True)
 
     # Extract insights and recommendations
     insights, recommendations = extract_insights_and_recommendations(items)
-    
+
     # Generate executive summary
     executive_summary = format_executive_summary(items)
-    executive_summary_html = str(executive_summary).replace("\n", "<br>")
+    executive_summary_html = executive_summary.replace("\n", "<br>")
 
-
-    log("INFO", "email_data_prepared", 
-        total_rows=total_rows, 
-        total_anomalies=total_anomalies,
-        insights_count=len(insights),
-        recommendations_count=len(recommendations),
-        anomaly_types=len(sorted_anomalies))
-
-    # Email content
+    # Prepare email content
     subject = f"Health Data Analysis Report - {datetime.utcnow().strftime('%B %d, %Y')}"
-    
-    # Format content for email
-    anomalies_text = "\n".join([f"  • {anomaly}: {count} occurrences" for anomaly, count in sorted_anomalies[:10]]) or "  • No anomalies detected"
-    insights_text = "\n".join([f"  • {insight}" for insight in insights[:10]]) or "  • Continuing to monitor health patterns"
-    recommendations_text = "\n".join([f"  • {rec}" for rec in recommendations[:10]]) or "  • Continue regular health monitoring"
+    anomalies_text = "\n".join([f"  • {a}: {c} occurrences" for a, c in sorted_anomalies[:10]]) or "  • No anomalies detected"
+    insights_text = "\n".join([f"  • {i}" for i in insights[:10]]) or "  • Continuing to monitor health patterns"
+    recommendations_text = "\n".join([f"  • {r}" for r in recommendations[:10]]) or "  • Continue regular health monitoring"
 
     body_text = f"""Health Data Analysis Report
 Generated on: {datetime.utcnow().strftime('%B %d, %Y at %I:%M %p UTC')}
@@ -219,18 +174,12 @@ This report is automatically generated from your health monitoring system.
 If you have concerns about any anomalies, please consult with a healthcare professional.
 """
 
-    # HTML version with better formatting
     anomalies_table_rows = "".join([
-        f"<tr><td>{anomaly}</td><td style='text-align: center;'><strong>{count}</strong></td></tr>" 
-        for anomaly, count in sorted_anomalies[:10]
+        f"<tr><td>{a}</td><td style='text-align: center;'><strong>{c}</strong></td></tr>" for a, c in sorted_anomalies[:10]
     ]) or "<tr><td colspan='2' style='text-align: center; color: #2ECC71;'>No anomalies detected</td></tr>"
 
-    insights_html = "".join([f"<li>{insight}</li>" for insight in insights[:10]]) or "<li style='color: #7F8C8D;'>Continuing to monitor health patterns</li>"
-    
-    recommendations_html = "".join([f"<li>{rec}</li>" for rec in recommendations[:10]]) or "<li style='color: #7F8C8D;'>Continue regular health monitoring</li>"
-
-    # Format executive summary for HTML (preserve line breaks)
-    executive_summary_html = executive_summary.replace('\n', '<br>')
+    insights_html = "".join([f"<li>{i}</li>" for i in insights[:10]]) or "<li style='color: #7F8C8D;'>Continuing to monitor health patterns</li>"
+    recommendations_html = "".join([f"<li>{r}</li>" for r in recommendations[:10]]) or "<li style='color: #7F8C8D;'>Continue regular health monitoring</li>"
 
     body_html = f"""
     <!DOCTYPE html>
@@ -413,25 +362,7 @@ If you have concerns about any anomalies, please consult with a healthcare profe
     </html>
     """
 
-    # Send email
     email_sent = send_email(subject, body_text, body_html)
-    
-    if email_sent:
-        # Update notification status in DynamoDB
-        table = dynamodb.Table(DDB_TABLE)
-        for item in items:
-            try:
-                table.update_item(
-                    Key={"correlation_id": item["correlation_id"], "analysis_id": item["analysis_id"]},
-                    UpdateExpression="SET notification_sent = :sent, notification_timestamp = :ts",
-                    ExpressionAttributeValues={
-                        ":sent": True,
-                        ":ts": datetime.utcnow().isoformat() + "Z"
-                    }
-                )
-            except Exception as e:
-                log("WARN", "failed_to_update_notification_status", 
-                    correlation_id=item.get("correlation_id"), error=str(e))
 
     return {
         "status": "success" if email_sent else "failed",
