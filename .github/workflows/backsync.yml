@@ -7,10 +7,6 @@ on:
 jobs:
   create-pr:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -21,7 +17,7 @@ jobs:
         run: |
           gh label create "auto-sync" --description "Automated synchronization PR" --color "0366d6" || true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
 
       - name: Check if PR already exists
         id: check-pr
@@ -36,7 +32,7 @@ jobs:
             echo "No existing PR found"
           fi
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
 
       - name: Create Pull Request
         if: steps.check-pr.outputs.pr_exists == 'false'
@@ -52,4 +48,4 @@ jobs:
             --label auto-sync
           echo "Pull request created successfully"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
