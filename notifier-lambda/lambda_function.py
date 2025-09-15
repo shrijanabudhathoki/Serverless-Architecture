@@ -74,40 +74,71 @@ def fetch_recent_analysis(correlation_id=None, limit=10):
     
     return items
 
+# Alternative function using GSI (if you implement Option 1)
+def fetch_recent_analysis_with_gsi(correlation_id=None, limit=10):
+    table = dynamodb.Table(DDB_TABLE)
+    
+    if correlation_id:
+        # Query specific correlation_id
+        response = table.query(
+            KeyConditionExpression=Key('correlation_id').eq(correlation_id),
+            ScanIndexForward=False,
+            Limit=limit
+        )
+        items = response.get("Items", [])
+    else:
+        # Use GSI to get items sorted by timestamp
+        response = table.scan(
+            IndexName='TimestampIndex',
+            Limit=limit * 3  # Get more items since we'll sort them
+        )
+        all_items = response.get("Items", [])
+        
+        # Sort by timestamp (newest first)
+        items = sorted(
+            all_items,
+            key=lambda x: x.get('analysis_timestamp', ''),
+            reverse=True
+        )[:limit]
+    
+    log("INFO", "fetched_items_with_gsi", 
+        count=len(items),
+        correlation_id=correlation_id,
+        latest_timestamp=items[0].get('analysis_timestamp') if items else None)
+    
+    return items
+
 # -------- Helper Functions --------
 def extract_insights_and_recommendations(items):
-    """Extract insights and recommendations from DynamoDB items"""
-    all_insights = []
-    all_recommendations = []
+    """Extract insights and recommendations from the most recent DynamoDB item only"""
+    if not items:
+        return [], []
     
-    for item in items:
-        log("DEBUG", "processing_item", 
-            correlation_id=item.get("correlation_id", "unknown"),
-            timestamp=item.get("analysis_timestamp", "unknown"),
-            has_insights=bool(item.get("insights")),
-            has_recommendations=bool(item.get("recommendations")))
-        
-        # Extract insights
-        insights = item.get("insights", [])
-        if insights and isinstance(insights, list) and insights != ["No major trends observed"]:
-            all_insights.extend(insights)
-            log("DEBUG", "added_insights", count=len(insights))
-        
-        # Extract recommendations  
-        recommendations = item.get("recommendations", [])
-        if recommendations and isinstance(recommendations, list) and recommendations != ["No recommendations"]:
-            all_recommendations.extend(recommendations)
-            log("DEBUG", "added_recommendations", count=len(recommendations))
+    # Only use the most recent item (first item after sorting)
+    most_recent_item = items[0]
     
-    # Remove duplicates while preserving order
-    unique_insights = list(dict.fromkeys(all_insights))
-    unique_recommendations = list(dict.fromkeys(all_recommendations))
+    log("DEBUG", "processing_most_recent_item", 
+        correlation_id=most_recent_item.get("correlation_id", "unknown"),
+        timestamp=most_recent_item.get("analysis_timestamp", "unknown"),
+        has_insights=bool(most_recent_item.get("insights")),
+        has_recommendations=bool(most_recent_item.get("recommendations")))
     
-    log("INFO", "extracted_data", 
-        total_insights=len(unique_insights), 
-        total_recommendations=len(unique_recommendations))
+    # Extract insights from most recent analysis only
+    insights = most_recent_item.get("insights", [])
+    if not (insights and isinstance(insights, list) and insights != ["No major trends observed"]):
+        insights = []
     
-    return unique_insights, unique_recommendations
+    # Extract recommendations from most recent analysis only
+    recommendations = most_recent_item.get("recommendations", [])
+    if not (recommendations and isinstance(recommendations, list) and recommendations != ["No recommendations"]):
+        recommendations = []
+    
+    log("INFO", "extracted_data_from_latest", 
+        insights_count=len(insights), 
+        recommendations_count=len(recommendations),
+        analysis_timestamp=most_recent_item.get("analysis_timestamp", "unknown"))
+    
+    return insights, recommendations
 
 def format_executive_summary(items):
     summaries = []
