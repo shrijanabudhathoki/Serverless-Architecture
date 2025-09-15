@@ -13,6 +13,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: uat
+          fetch-depth: 0 # Fetch all history for all branches and tags
 
       - name: Set up Git
         run: |
@@ -26,7 +27,6 @@ jobs:
           commit-message: 'Sync UAT changes to Main'
           branch: sync-uat-to-main # Temporary branch for PR
           base: main
-          head: uat
           title: 'Sync UAT changes to Main'
           body: 'Automated PR to merge changes from UAT to Main branch.'
           labels: 'auto-sync'
