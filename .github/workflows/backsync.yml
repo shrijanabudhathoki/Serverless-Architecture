@@ -1,4 +1,6 @@
-name: Create PR from UAT to Main
+name: Backsync UAT to Main
+
+# Trigger on push to uat branch
 on:
   push:
     branches:
@@ -7,45 +9,45 @@ on:
 jobs:
   create-pr:
     runs-on: ubuntu-latest
+
     steps:
+      # Step 1: Checkout the repo
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0   # Fetch full history to avoid issues
 
-      - name: Create auto-sync label if it doesn't exist
+      # Step 2: Install GitHub CLI
+      - name: Install GitHub CLI
         run: |
-          gh label create "auto-sync" --description "Automated synchronization PR" --color "0366d6" || true
+          sudo apt update
+          sudo apt install -y gh
+
+      # Step 3: Authenticate GitHub CLI
+      - name: Authenticate GitHub CLI
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
-
-      - name: Check if PR already exists
-        id: check-pr
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          existing_pr=$(gh pr list --base main --head uat --state open --json number --jq '.[0].number // empty')
-          if [ -n "$existing_pr" ]; then
-            echo "pr_exists=true" >> $GITHUB_OUTPUT
-            echo "pr_number=$existing_pr" >> $GITHUB_OUTPUT
-            echo "Existing PR found: #$existing_pr"
+          gh auth login --with-token <<< "$GH_TOKEN"
+
+      # Step 4: Ensure main branch is up to date locally
+      - name: Fetch main branch
+        run: |
+          git fetch origin main:main
+
+      # Step 5: Create or update Pull Request
+      - name: Create or update PR from uat to main
+        run: |
+          # Check if a PR already exists
+          PR_URL=$(gh pr list --base main --head uat --json url -q '.[0].url')
+          if [ -z "$PR_URL" ]; then
+            # Create a new PR
+            gh pr create \
+              --base main \
+              --head uat \
+              --title "Backsync UAT changes to Main" \
+              --body "Automated PR to merge latest UAT changes into Main branch." \
+              --label "auto-sync"
           else
-            echo "pr_exists=false" >> $GITHUB_OUTPUT
-            echo "No existing PR found"
+            echo "PR already exists: $PR_URL"
           fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
-
-      - name: Create Pull Request
-        if: steps.check-pr.outputs.pr_exists == 'false'
-        run: |
-          gh pr create \
-            --base main \
-            --head uat \
-            --title "Back sync: UAT → Main" \
-            --body "Automated back sync PR to merge UAT changes into Main.
-            
-            **Latest UAT commit:** ${{ github.sha }}
-            **Triggered by:** Push to UAT branch" \
-            --label auto-sync
-          echo "Pull request created successfully"
-        env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
