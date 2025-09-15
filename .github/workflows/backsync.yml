@@ -17,6 +17,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Create auto-sync label if it doesn't exist
+        run: |
+          gh label create "auto-sync" --description "Automated synchronization PR" --color "0366d6" || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Check if PR already exists
         id: check-pr
         run: |
@@ -38,12 +44,12 @@ jobs:
           gh pr create \
             --base main \
             --head uat \
-            --title "🔄 Back sync: UAT → Main" \
+            --title "Back sync: UAT → Main" \
             --body "Automated back sync PR to merge UAT changes into Main.
             
             **Latest UAT commit:** ${{ github.sha }}
             **Triggered by:** Push to UAT branch" \
             --label auto-sync
-          echo "✅ Pull request created successfully"
+          echo "Pull request created successfully"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
