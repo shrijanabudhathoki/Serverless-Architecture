@@ -27,7 +27,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          # Attempt to create PR; if it exists, just print message
           gh pr create \
             --base main \
             --head uat \
