@@ -1,4 +1,4 @@
-name: Backsync UAT to Main
+name: Backsync UAT to Dev
 
 on:
   push:
@@ -19,17 +19,17 @@ jobs:
           sudo apt update
           sudo apt install -y gh
 
-      - name: Fetch main branch
+      - name: Fetch dev branch
         run: |
-          git fetch origin main:main
+          git fetch origin dev:dev
 
-      - name: Create PR from uat to main
+      - name: Create PR from uat to dev
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           gh pr create \
-            --base main \
+            --base dev \
             --head uat \
-            --title "Backsync UAT changes to Main" \
-            --body "Automated PR to merge latest UAT changes into Main branch." \
+            --title "Backsync UAT changes to Dev" \
+            --body "Automated PR to merge latest UAT changes into Dev branch." \
             --label "auto-sync" || echo "PR may already exist"
