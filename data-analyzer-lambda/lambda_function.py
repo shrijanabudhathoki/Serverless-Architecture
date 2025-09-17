@@ -176,18 +176,6 @@ def analyze_with_llm(rows, anomalies):
             "inferenceConfig": {"maxTokens": 800, "temperature": 0.3}
         })
     )
-    log("INFO", "bedrock_usage",
-        correlation_id=corr_id,
-        prompt_tokens=response["usage"]["promptTokens"],
-        completion_tokens=response["usage"]["completionTokens"],
-        total_tokens=response["usage"]["totalTokens"]
-    )
-
-    COST_PER_1K_TOKENS = 0.00006	  # Replace with actual Nova Lie 1.0 rate
-    total_tokens = response["usage"]["totalTokens"]
-    cost = (total_tokens / 1000) * COST_PER_1K_TOKENS
-    log("INFO", "estimated_bedrock_cost", correlation_id=corr_id, cost_usd=cost)
-
     raw = response["body"].read()
     payload = json.loads(raw)
     output_text = payload["output"]["message"]["content"][0]["text"]
@@ -196,6 +184,21 @@ def analyze_with_llm(rows, anomalies):
     if output_text.startswith('```json'):
         output_text = output_text.replace('```json', '').replace('```', '').strip()
     
+    COST_PER_1K_TOKENS = 0.00006	  # USD
+    
+    usage = payload.get("usage", {})  # Some Bedrock responses include usage info
+    prompt_tokens = usage.get("promptTokens", 0)
+    completion_tokens = usage.get("completionTokens", 0)
+    total_tokens = usage.get("totalTokens", 0)
+    estimated_cost = (total_tokens / 1000) * COST_PER_1K_TOKENS
+
+    log("INFO", "bedrock_usage", 
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        estimated_cost_usd=estimated_cost
+    )
+
     result = json.loads(output_text)
     log("INFO", "llm_analysis_success", insights_count=len(result.get("insights", [])), recommendations_count=len(result.get("recommendations", [])))
         
