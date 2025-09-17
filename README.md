@@ -65,3 +65,13 @@ This project implements a data processing pipeline on AWS that demonstrates prac
 - It generates a detailed email report (text + HTML) with statistics, anomalies, insights, and recommendations.
 - It sends the email via Amazon SES.
 - It update DynamoDB records to mark that a notification was sent.
+
+Documentation
+Bedrock: Cost analysis for the model you are using, 
+	     If you were to perform prompt management, perform cost analysis
+README.md with:
+Architecture diagram
+Setup/deployment steps (terraform init/apply)
+Purpose of each Lambda
+Security + error handling description
+Sample input/output examples

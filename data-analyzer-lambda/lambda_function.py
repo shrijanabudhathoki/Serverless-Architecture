@@ -176,6 +176,18 @@ def analyze_with_llm(rows, anomalies):
             "inferenceConfig": {"maxTokens": 800, "temperature": 0.3}
         })
     )
+    log("INFO", "bedrock_usage",
+        correlation_id=corr_id,
+        prompt_tokens=response["usage"]["promptTokens"],
+        completion_tokens=response["usage"]["completionTokens"],
+        total_tokens=response["usage"]["totalTokens"]
+    )
+
+    COST_PER_1K_TOKENS = 0.00006	  # Replace with actual Nova Lie 1.0 rate
+    total_tokens = response["usage"]["totalTokens"]
+    cost = (total_tokens / 1000) * COST_PER_1K_TOKENS
+    log("INFO", "estimated_bedrock_cost", correlation_id=corr_id, cost_usd=cost)
+
     raw = response["body"].read()
     payload = json.loads(raw)
     output_text = payload["output"]["message"]["content"][0]["text"]
