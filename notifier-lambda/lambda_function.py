@@ -349,16 +349,13 @@ Generated on: {datetime.utcnow().strftime('%B %d, %Y at %I:%M %p UTC')}
 Based on analysis from: {items[0].get('analysis_timestamp', 'Unknown') if items else 'Unknown'}
 
 === DATA PROCESSING OVERVIEW ===
-Files Processed: {processing_stats['files_processed']}
 Total Raw Records: {processing_stats['total_input']:,}
 Valid Records: {processing_stats['total_valid']:,}
 Rejected Records: {processing_stats['total_rejected']:,}
-Data Quality: {data_quality_pct:.1f}%
 
 === ANALYSIS OVERVIEW ===
 Records Analyzed: {total_analyzed_rows:,}
 Total Anomalies Detected: {total_anomalies:,}
-Analysis Period: {len(items)} recent analysis runs
 
 === TOP HEALTH ANOMALIES ===
 {anomalies_text}
@@ -566,9 +563,6 @@ If you have concerns about any anomalies, please consult with a healthcare profe
                 <div class="data-quality-section">
                     <h3 style="margin-top: 0; color: #2c3e50;">📊 Data Processing Summary</h3>
                     <div class="quality-metric">
-                        <span><strong>Files Processed:</strong> {processing_stats['files_processed']}</span>
-                    </div>
-                    <div class="quality-metric">
                         <span><strong>Raw Records:</strong> {processing_stats['total_input']:,}</span>
                     </div>
                     <div class="quality-metric">
@@ -576,10 +570,6 @@ If you have concerns about any anomalies, please consult with a healthcare profe
                     </div>
                     <div class="quality-metric">
                         <span><strong>Rejected Records:</strong> {processing_stats['total_rejected']:,}</span>
-                    </div>
-                    <div class="quality-metric">
-                        <span><strong>Data Quality:</strong></span>
-                        <span class="quality-percentage">{data_quality_pct:.1f}%</span>
                     </div>
                 </div>
 
@@ -665,8 +655,6 @@ If you have concerns about any anomalies, please consult with a healthcare profe
         "processing_stats": processing_stats,
         "total_analyzed_rows": total_analyzed_rows,
         "total_anomalies": total_anomalies,
-        "insights_count": len(insights),
-        "recommendations_count": len(recommendations),
         "email_sent": email_sent,
         "report_generated": datetime.utcnow().isoformat() + "Z",
         "latest_analysis_timestamp": items[0].get('analysis_timestamp') if items else None
