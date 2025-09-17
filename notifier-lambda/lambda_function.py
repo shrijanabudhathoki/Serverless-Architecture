@@ -9,10 +9,13 @@ from boto3.dynamodb.conditions import Key
 # -------- CONFIG --------
 dynamodb = boto3.resource("dynamodb")
 ses = boto3.client("ses")
+s3 = boto3.client("s3")
 
 DDB_TABLE = os.environ.get("DDB_TABLE", "health_analysis")
 SES_SENDER = os.environ.get("SES_SENDER")
 SES_RECIPIENTS = os.environ.get("SES_RECIPIENTS", "").split(",")
+BUCKET_NAME = os.environ.get("BUCKET_NAME")
+PROCESSED_PREFIX = os.environ.get("PROCESSED_PREFIX", "processed/")
 
 # -------- Logging --------
 def log(level, message, **kwargs):
@@ -37,6 +40,80 @@ def log(level, message, **kwargs):
     payload.update(kwargs)
     safe_payload = convert(payload)
     print(json.dumps(safe_payload))
+
+# -------- Helper Functions for Row Counts --------
+def fetch_manifest_data(correlation_ids):
+    """Fetch processing statistics from manifest files stored in S3"""
+    processing_stats = {
+        "total_input": 0,
+        "total_valid": 0, 
+        "total_rejected": 0,
+        "files_processed": 0,
+        "manifests_found": []
+    }
+    
+    if not BUCKET_NAME:
+        log("WARN", "bucket_name_not_configured")
+        return processing_stats
+    
+    for correlation_id in correlation_ids:
+        try:
+            # Extract original filename from correlation_id format: bucket/key@version
+            if "/" in correlation_id and "@" in correlation_id:
+                key_part = correlation_id.split("/", 1)[1].split("@")[0]
+                base_name = os.path.basename(key_part)
+                manifest_key = f"{PROCESSED_PREFIX}{base_name.replace('.csv','')}_manifest.json"
+                
+                log("DEBUG", "attempting_manifest_fetch", 
+                    correlation_id=correlation_id,
+                    manifest_key=manifest_key)
+                
+                try:
+                    obj = s3.get_object(Bucket=BUCKET_NAME, Key=manifest_key)
+                    manifest_content = obj["Body"].read().decode("utf-8")
+                    manifest = json.loads(manifest_content)
+                    
+                    counts = manifest.get("counts", {})
+                    processing_stats["total_input"] += counts.get("input", 0)
+                    processing_stats["total_valid"] += counts.get("valid", 0)
+                    processing_stats["total_rejected"] += counts.get("rejected", 0)
+                    processing_stats["files_processed"] += 1
+                    processing_stats["manifests_found"].append({
+                        "correlation_id": correlation_id,
+                        "manifest_key": manifest_key,
+                        "counts": counts
+                    })
+                    
+                    log("INFO", "manifest_processed", 
+                        correlation_id=correlation_id,
+                        input_rows=counts.get("input", 0),
+                        valid_rows=counts.get("valid", 0),
+                        rejected_rows=counts.get("rejected", 0))
+                        
+                except s3.exceptions.NoSuchKey:
+                    log("WARN", "manifest_not_found", 
+                        correlation_id=correlation_id,
+                        manifest_key=manifest_key)
+                except Exception as e:
+                    log("ERROR", "manifest_fetch_failed", 
+                        correlation_id=correlation_id,
+                        manifest_key=manifest_key,
+                        error=str(e))
+            else:
+                log("WARN", "invalid_correlation_id_format", correlation_id=correlation_id)
+                
+        except Exception as e:
+            log("ERROR", "processing_correlation_id_failed", 
+                correlation_id=correlation_id, 
+                error=str(e))
+    
+    log("INFO", "processing_stats_aggregated", 
+        total_input=processing_stats["total_input"],
+        total_valid=processing_stats["total_valid"],
+        total_rejected=processing_stats["total_rejected"],
+        files_processed=processing_stats["files_processed"])
+    
+    return processing_stats
 
 # -------- DynamoDB Retrieval --------
 def fetch_recent_analysis(correlation_id=None, limit=10):
@@ -216,8 +293,12 @@ def lambda_handler(event, context):
         newest_timestamp=items[0].get('analysis_timestamp') if items else None,
         oldest_timestamp=items[-1].get('analysis_timestamp') if items else None)
 
-    # Aggregate row counts and anomalies
-    total_rows = sum(item.get("records_analyzed", 0) for item in items)
+    # Get correlation IDs for fetching processing statistics
+    correlation_ids = [item.get("correlation_id") for item in items if item.get("correlation_id")]
+    processing_stats = fetch_manifest_data(correlation_ids)
+
+    # Aggregate row counts and anomalies from analysis results
+    total_analyzed_rows = sum(item.get("records_analyzed", 0) for item in items)
     total_anomalies = sum(len(item.get("anomalies", [])) for item in items)
 
     # Build anomaly frequency
@@ -238,7 +319,10 @@ def lambda_handler(event, context):
     executive_summary_html = str(executive_summary).replace("\n", "<br>")
 
     log("INFO", "email_data_prepared", 
-        total_rows=total_rows, 
+        total_input_rows=processing_stats["total_input"],
+        total_valid_rows=processing_stats["total_valid"], 
+        total_rejected_rows=processing_stats["total_rejected"],
+        total_analyzed_rows=total_analyzed_rows,
         total_anomalies=total_anomalies,
         insights_count=len(insights),
         recommendations_count=len(recommendations),
@@ -246,6 +330,9 @@ def lambda_handler(event, context):
 
     # Email content
     subject = f"Health Data Analysis Report - {datetime.utcnow().strftime('%B %d, %Y')}"
+    
+    # Calculate data quality percentage
+    data_quality_pct = (processing_stats["total_valid"] / processing_stats["total_input"] * 100) if processing_stats["total_input"] > 0 else 100
     
     # Format content for email
     anomalies_text = "\n".join([f"  • {anomaly}: {count} occurrences" for anomaly, count in sorted_anomalies[:10]]) or "  • No anomalies detected"
@@ -256,8 +343,15 @@ def lambda_handler(event, context):
 Generated on: {datetime.utcnow().strftime('%B %d, %Y at %I:%M %p UTC')}
 Based on analysis from: {items[0].get('analysis_timestamp', 'Unknown') if items else 'Unknown'}
 
-=== OVERVIEW ===
-Total Health Records Processed: {total_rows:,}
+=== DATA PROCESSING OVERVIEW ===
+Files Processed: {processing_stats['files_processed']}
+Total Raw Records: {processing_stats['total_input']:,}
+Valid Records: {processing_stats['total_valid']:,}
+Rejected Records: {processing_stats['total_rejected']:,}
+Data Quality: {data_quality_pct:.1f}%
+
+=== ANALYSIS OVERVIEW ===
+Records Analyzed: {total_analyzed_rows:,}
 Total Anomalies Detected: {total_anomalies:,}
 Analysis Period: {len(items)} recent analysis runs
 
@@ -289,6 +383,9 @@ If you have concerns about any anomalies, please consult with a healthcare profe
 
     # Format executive summary for HTML (preserve line breaks)
     executive_summary_html = executive_summary.replace('\n', '<br>')
+
+    # Determine quality status color
+    quality_color = "#27AE60" if data_quality_pct >= 95 else "#F39C12" if data_quality_pct >= 85 else "#E74C3C"
 
     body_html = f"""
     <!DOCTYPE html>
@@ -336,19 +433,39 @@ If you have concerns about any anomalies, please consult with a healthcare profe
                 background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
                 border-radius: 8px; 
                 color: white; 
+                flex-wrap: wrap;
             }}
             .metric {{ 
                 text-align: center; 
-                margin: 0 15px
+                margin: 10px 15px;
+                min-width: 100px;
             }}
             .metric-number {{ 
-                font-size: 32px; 
+                font-size: 24px; 
                 font-weight: bold; 
                 display: block; 
             }}
             .metric-label {{ 
-                font-size: 12px; 
+                font-size: 11px; 
                 opacity: 0.9; 
+            }}
+            .data-quality-section {{
+                background: linear-gradient(135deg, #a8e6cf 0%, #7fcdcd 100%);
+                padding: 20px;
+                border-radius: 8px;
+                margin: 20px 0;
+                color: #2c3e50;
+            }}
+            .quality-metric {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin: 8px 0;
+            }}
+            .quality-percentage {{
+                font-size: 24px;
+                font-weight: bold;
+                color: {quality_color};
             }}
             h2 {{ 
                 color: #2980B9; 
@@ -441,10 +558,30 @@ If you have concerns about any anomalies, please consult with a healthcare profe
             </div>
 
             <div class="content">
+                <div class="data-quality-section">
+                    <h3 style="margin-top: 0; color: #2c3e50;">📊 Data Processing Summary</h3>
+                    <div class="quality-metric">
+                        <span><strong>Files Processed:</strong> {processing_stats['files_processed']}</span>
+                    </div>
+                    <div class="quality-metric">
+                        <span><strong>Raw Records:</strong> {processing_stats['total_input']:,}</span>
+                    </div>
+                    <div class="quality-metric">
+                        <span><strong>Valid Records:</strong> {processing_stats['total_valid']:,}</span>
+                    </div>
+                    <div class="quality-metric">
+                        <span><strong>Rejected Records:</strong> {processing_stats['total_rejected']:,}</span>
+                    </div>
+                    <div class="quality-metric">
+                        <span><strong>Data Quality:</strong></span>
+                        <span class="quality-percentage">{data_quality_pct:.1f}%</span>
+                    </div>
+                </div>
+
                 <div class="metrics">
                     <div class="metric">
-                        <span class="metric-number">{total_rows:,}</span>
-                        <span class="metric-label">Records Processed</span>
+                        <span class="metric-number">{total_analyzed_rows:,}</span>
+                        <span class="metric-label">Records Analyzed</span>
                     </div>
                     <div class="metric">
                         <span class="metric-number">{total_anomalies:,}</span>
@@ -520,7 +657,8 @@ If you have concerns about any anomalies, please consult with a healthcare profe
 
     return {
         "status": "success" if email_sent else "failed",
-        "total_rows": total_rows,
+        "processing_stats": processing_stats,
+        "total_analyzed_rows": total_analyzed_rows,
         "total_anomalies": total_anomalies,
         "insights_count": len(insights),
         "recommendations_count": len(recommendations),
