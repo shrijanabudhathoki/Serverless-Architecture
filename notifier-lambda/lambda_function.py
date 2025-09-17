@@ -278,7 +278,6 @@ Based on analysis from: {items[0].get('analysis_timestamp', 'Unknown') if items 
 Raw Records Received: {raw_count:,}
 Valid Records Processed: {valid_count:,}
 Invalid/Rejected Records: {rejected_count:,}
-Data Quality Score: {data_quality_percentage}%
 
 === OVERVIEW ===
 Total Health Records Processed: {total_rows:,}
@@ -482,10 +481,6 @@ If you have concerns about any anomalies, please consult with a healthcare profe
                         <span class="quality-number">{rejected_count:,}</span>
                         <span class="quality-label">Invalid/Rejected<br>Records</span>
                     </div>
-                    <div class="quality-metric">
-                        <span class="quality-number quality-score">{data_quality_percentage}%</span>
-                        <span class="quality-label">Data Quality<br>Score</span>
-                    </div>
                 </div>
 
                 <!-- Analysis Results -->
@@ -582,7 +577,6 @@ If you have concerns about any anomalies, please consult with a healthcare profe
         "raw_count": raw_count,
         "valid_count": valid_count,
         "rejected_count": rejected_count,
-        "data_quality_percentage": data_quality_percentage,
         "insights_count": len(insights),
         "recommendations_count": len(recommendations),
         "email_sent": email_sent,
