@@ -90,7 +90,7 @@ def upload_file_to_s3(file_path):
     return key
 
 if __name__ == "__main__":
-    USE_DOWNLOADED_FILE = True
+    USE_DOWNLOADED_FILE = False
 
     if USE_DOWNLOADED_FILE:
         dataset_path = "synthetic_health_data_2.csv"
