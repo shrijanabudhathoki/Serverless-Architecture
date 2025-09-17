@@ -149,129 +149,43 @@ def format_executive_summary(items):
 def fetch_processing_counts_from_manifest(correlation_id):
     """Extract processing counts from manifest based on correlation_id"""
     if not correlation_id:
-        log("WARN", "no_correlation_id_provided")
         return {"input": 0, "valid": 0, "rejected": 0}
-    
-    log("DEBUG", "parsing_correlation_id", correlation_id=correlation_id)
     
     try:
         # Extract source info from correlation_id format: bucket/key@version
         if "@" in correlation_id:
             source_path, version = correlation_id.split("@", 1)
-            log("DEBUG", "split_correlation_id", source_path=source_path, version=version)
-            
-            # Handle different path formats
             if "/" in source_path:
-                # Split only on first slash to handle nested paths
-                parts = source_path.split("/")
-                bucket = parts[0]
-                source_key = "/".join(parts[1:])
-                
-                log("DEBUG", "parsed_path", bucket=bucket, source_key=source_key)
+                bucket, source_key = source_path.split("/", 1)
                 
                 # Convert raw key to manifest key 
                 # raw/health_data.csv -> processed/health_data_manifest.json
                 if source_key.startswith("raw/"):
-                    # Get filename without path and extension
-                    filename = os.path.basename(source_key)
-                    base_name = filename.replace('.csv', '') if filename.endswith('.csv') else filename
+                    base_name = os.path.basename(source_key).replace('.csv', '')
                     manifest_key = f"{PROCESSED_PREFIX}{base_name}_manifest.json"
                     
-                    log("INFO", "attempting_manifest_fetch", 
-                        correlation_id=correlation_id,
-                        source_key=source_key,
-                        manifest_key=manifest_key,
-                        bucket=BUCKET_NAME)
+                    log("INFO", "fetching_manifest", 
+                        correlation_id=correlation_id, 
+                        manifest_key=manifest_key)
                     
-                    # Try to fetch the manifest
                     obj = s3.get_object(Bucket=BUCKET_NAME, Key=manifest_key)
-                    manifest_content = obj["Body"].read().decode("utf-8")
-                    manifest = json.loads(manifest_content)
+                    manifest = json.loads(obj["Body"].read().decode("utf-8"))
                     counts = manifest.get("counts", {"input": 0, "valid": 0, "rejected": 0})
                     
                     log("INFO", "manifest_counts_retrieved", 
                         correlation_id=correlation_id, 
-                        manifest_key=manifest_key,
                         counts=counts)
                     return counts
-                else:
-                    log("WARN", "source_key_not_raw_prefix", 
-                        correlation_id=correlation_id, 
-                        source_key=source_key)
-            else:
-                log("WARN", "invalid_correlation_id_format", 
-                    correlation_id=correlation_id,
-                    expected_format="bucket/key@version")
-        else:
-            log("WARN", "correlation_id_missing_version", 
-                correlation_id=correlation_id,
-                expected_format="bucket/key@version")
-    except s3.exceptions.NoSuchKey as e:
-        log("ERROR", "manifest_not_found", 
-            correlation_id=correlation_id, 
-            error=str(e))
     except Exception as e:
-        log("ERROR", "failed_to_fetch_manifest_counts", 
+        log("WARN", "failed_to_fetch_manifest_counts", 
             correlation_id=correlation_id, 
             error=str(e))
     
     return {"input": 0, "valid": 0, "rejected": 0}
 
-def test_manifest_access(items):
-    """Test function to help debug manifest access issues"""
-    log("INFO", "=== MANIFEST ACCESS TEST ===")
-    log("INFO", "bucket_name", BUCKET_NAME=BUCKET_NAME)
-    log("INFO", "processed_prefix", PROCESSED_PREFIX=PROCESSED_PREFIX)
-    
-    for i, item in enumerate(items[:2]):  # Test first 2 items
-        correlation_id = item.get("correlation_id")
-        log("INFO", f"testing_item_{i}", 
-            correlation_id=correlation_id,
-            analysis_timestamp=item.get("analysis_timestamp"),
-            records_analyzed=item.get("records_analyzed"))
-        
-        # Try to parse correlation_id  
-        if correlation_id and "@" in correlation_id:
-            source_path = correlation_id.split("@")[0]
-            if "/" in source_path:
-                parts = source_path.split("/")
-                bucket = parts[0]
-                source_key = "/".join(parts[1:])
-                
-                if source_key.startswith("raw/"):
-                    filename = os.path.basename(source_key)
-                    base_name = filename.replace('.csv', '') if filename.endswith('.csv') else filename
-                    expected_manifest = f"{PROCESSED_PREFIX}{base_name}_manifest.json"
-                    
-                    log("INFO", f"expected_manifest_{i}",
-                        source_bucket=bucket,
-                        source_key=source_key,  
-                        expected_manifest_key=expected_manifest)
-                    
-                    # Check if manifest exists
-                    try:
-                        s3.head_object(Bucket=BUCKET_NAME, Key=expected_manifest)
-                        log("INFO", f"manifest_exists_{i}", manifest_key=expected_manifest)
-                        
-                        # Try to read it
-                        obj = s3.get_object(Bucket=BUCKET_NAME, Key=expected_manifest)
-                        content = obj["Body"].read().decode("utf-8")[:200]  # First 200 chars
-                        log("INFO", f"manifest_content_preview_{i}", 
-                            manifest_key=expected_manifest,
-                            content_preview=content)
-                    except Exception as e:
-                        log("ERROR", f"manifest_access_failed_{i}", 
-                            manifest_key=expected_manifest,
-                            error=str(e))
-    
-    log("INFO", "=== END MANIFEST ACCESS TEST ===")
-
 def aggregate_processing_counts(items):
     """Aggregate processing counts from multiple analysis items"""
     total_counts = {"input": 0, "valid": 0, "rejected": 0}
-    
-    # First run the test function
-    test_manifest_access(items)
     
     for item in items:
         correlation_id = item.get("correlation_id")
@@ -327,28 +241,18 @@ def lambda_handler(event, context):
 
     # Get data processing counts from EventBridge event detail or fetch from S3 manifests
     detail = event.get("detail", {})
-    raw_count = valid_count = rejected_count = 0
-    
-    log("INFO", "processing_counts_source_check", 
-        has_event_detail=bool(detail),
-        has_counts_in_detail=bool(detail.get("counts")),
-        correlation_ids=[item.get("correlation_id") for item in items[:3]])
-    
     if detail.get("counts"):
         # If counts are provided in the event (from EventBridge trigger)
         counts = detail["counts"]
         raw_count = counts.get("input", 0)
         valid_count = counts.get("valid", 0)
         rejected_count = counts.get("rejected", 0)
-        log("INFO", "using_event_detail_counts", counts=counts)
     else:
         # Aggregate counts from all manifests for the analysis items
-        log("INFO", "fetching_counts_from_manifests", items_count=len(items))
         aggregated_counts = aggregate_processing_counts(items)
         raw_count = aggregated_counts["input"]
         valid_count = aggregated_counts["valid"]
         rejected_count = aggregated_counts["rejected"]
-        log("INFO", "aggregated_manifest_counts", aggregated_counts=aggregated_counts)
 
     # Aggregate analysis results
     total_rows = sum(item.get("records_analyzed", 0) for item in items)
@@ -370,18 +274,12 @@ def lambda_handler(event, context):
     # Generate executive summary
     executive_summary = format_executive_summary(items)
 
-    # Calculate data quality percentage
-    data_quality_percentage = round((valid_count / raw_count * 100) if raw_count > 0 else 0, 1)
-
     log("INFO", "email_data_prepared", 
         total_rows=total_rows, 
         total_anomalies=total_anomalies,
         raw_count=raw_count,
         valid_count=valid_count,
         rejected_count=rejected_count,
-        data_quality_percentage=data_quality_percentage,
-        insights_count=len(insights),
-        recommendations_count=len(recommendations),
         anomaly_types=len(sorted_anomalies))
 
     # Email content
@@ -400,12 +298,6 @@ Based on analysis from: {items[0].get('analysis_timestamp', 'Unknown') if items 
 Raw Records Received: {raw_count:,}
 Valid Records Processed: {valid_count:,}
 Invalid/Rejected Records: {rejected_count:,}
-Data Quality Score: {data_quality_percentage}%
-
-=== ANALYSIS OVERVIEW ===
-Total Health Records Analyzed: {total_rows:,}
-Total Anomalies Detected: {total_anomalies:,}
-Analysis Period: {len(items)} recent analysis runs
 
 === TOP HEALTH ANOMALIES ===
 {anomalies_text}
@@ -643,10 +535,6 @@ If you have concerns about any anomalies, please consult with a healthcare profe
                         <span class="quality-number">{rejected_count:,}</span>
                         <span class="quality-label">Invalid/Rejected<br>Records</span>
                     </div>
-                    <div class="quality-metric">
-                        <span class="quality-number quality-score">{data_quality_percentage}%</span>
-                        <span class="quality-label">Data Quality<br>Score</span>
-                    </div>
                 </div>
 
                 <!-- Analysis Results -->
@@ -659,14 +547,6 @@ If you have concerns about any anomalies, please consult with a healthcare profe
                     <div class="metric">
                         <span class="metric-number">{total_anomalies:,}</span>
                         <span class="metric-label">Anomalies<br>Detected</span>
-                    </div>
-                    <div class="metric">
-                        <span class="metric-number">{len(insights)}</span>
-                        <span class="metric-label">Key<br>Insights</span>
-                    </div>
-                    <div class="metric">
-                        <span class="metric-number">{len(recommendations)}</span>
-                        <span class="metric-label">Action Items<br>Recommended</span>
                     </div>
                 </div>
 
@@ -743,9 +623,6 @@ If you have concerns about any anomalies, please consult with a healthcare profe
         "raw_count": raw_count,
         "valid_count": valid_count,
         "rejected_count": rejected_count,
-        "data_quality_percentage": data_quality_percentage,
-        "insights_count": len(insights),
-        "recommendations_count": len(recommendations),
         "email_sent": email_sent,
         "report_generated": datetime.utcnow().isoformat() + "Z",
         "latest_analysis_timestamp": items[0].get('analysis_timestamp') if items else None
