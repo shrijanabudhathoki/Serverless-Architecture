@@ -200,6 +200,16 @@ def send_email(subject, body_text, body_html):
         log("ERROR", "email_failed", error=str(e))
         return False
 
+def fetch_row_counts(bucket, manifest_key):
+    """Fetch raw/valid/rejected counts from manifest.json in S3"""
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=manifest_key)
+        manifest = json.loads(obj["Body"].read().decode("utf-8"))
+        return manifest.get("counts", {})
+    except Exception as e:
+        log("ERROR", "failed_to_fetch_manifest", bucket=bucket, key=manifest_key, error=str(e))
+        return {"input": 0, "valid": 0, "rejected": 0}
+
 # -------- Lambda Handler --------
 def lambda_handler(event, context):
     correlation_id = event.get("correlation_id")  # optional filter
@@ -213,6 +223,16 @@ def lambda_handler(event, context):
         item_count=len(items),
         newest_timestamp=items[0].get('analysis_timestamp') if items else None,
         oldest_timestamp=items[-1].get('analysis_timestamp') if items else None)
+
+    detail = event.get("detail", {})
+    bucket = detail.get("bucket")
+    manifest_key = detail.get("manifest_key")
+
+    # Row counts (prefer event counts, fallback to S3 manifest)
+    counts = detail.get("counts") or fetch_row_counts(bucket, manifest_key)
+    raw_count = counts.get("input", 0)
+    valid_count = counts.get("valid", 0)
+    rejected_count = counts.get("rejected", 0)
 
     # Aggregate row counts and anomalies
     total_rows = sum(item.get("records_analyzed", 0) for item in items)
@@ -253,6 +273,12 @@ def lambda_handler(event, context):
     body_text = f"""Health Data Analysis Report
 Generated on: {datetime.utcnow().strftime('%B %d, %Y at %I:%M %p UTC')}
 Based on analysis from: {items[0].get('analysis_timestamp', 'Unknown') if items else 'Unknown'}
+
+=== DATA PROCESSING OVERVIEW ===
+Raw Records Received: {raw_count:,}
+Valid Records Processed: {valid_count:,}
+Invalid/Rejected Records: {rejected_count:,}
+Data Quality Score: {data_quality_percentage}%
 
 === OVERVIEW ===
 Total Health Records Processed: {total_rows:,}
@@ -438,15 +464,48 @@ If you have concerns about any anomalies, please consult with a healthcare profe
                 </div>
             </div>
 
+            
+
             <div class="content">
+                <!-- Data Quality Overview -->
+                <h2>📊 Data Processing Quality</h2>
+                <div class="data-quality-section">
+                    <div class="quality-metric">
+                        <span class="quality-number">{raw_count:,}</span>
+                        <span class="quality-label">Raw Records<br>Received</span>
+                    </div>
+                    <div class="quality-metric">
+                        <span class="quality-number">{valid_count:,}</span>
+                        <span class="quality-label">Valid Records<br>Processed</span>
+                    </div>
+                    <div class="quality-metric">
+                        <span class="quality-number">{rejected_count:,}</span>
+                        <span class="quality-label">Invalid/Rejected<br>Records</span>
+                    </div>
+                    <div class="quality-metric">
+                        <span class="quality-number quality-score">{data_quality_percentage}%</span>
+                        <span class="quality-label">Data Quality<br>Score</span>
+                    </div>
+                </div>
+
+                <!-- Analysis Results -->
+                <h2>📈 Analysis Results</h2>
                 <div class="metrics">
                     <div class="metric">
                         <span class="metric-number">{total_rows:,}</span>
-                        <span class="metric-label">Records Processed</span>
+                        <span class="metric-label">Health Records<br>Analyzed</span>
                     </div>
                     <div class="metric">
                         <span class="metric-number">{total_anomalies:,}</span>
-                        <span class="metric-label">Anomalies Detected</span>
+                        <span class="metric-label">Anomalies<br>Detected</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-number">{len(insights)}</span>
+                        <span class="metric-label">Key<br>Insights</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-number">{len(recommendations)}</span>
+                        <span class="metric-label">Action Items<br>Recommended</span>
                     </div>
                 </div>
 
@@ -520,6 +579,10 @@ If you have concerns about any anomalies, please consult with a healthcare profe
         "status": "success" if email_sent else "failed",
         "total_rows": total_rows,
         "total_anomalies": total_anomalies,
+        "raw_count": raw_count,
+        "valid_count": valid_count,
+        "rejected_count": rejected_count,
+        "data_quality_percentage": data_quality_percentage,
         "insights_count": len(insights),
         "recommendations_count": len(recommendations),
         "email_sent": email_sent,
