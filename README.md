@@ -43,4 +43,25 @@ This project implements a data processing pipeline on AWS that demonstrates prac
 
 ### Lambda Functions:
 #### Data ingestor lambda function:
-- 
+- Data ingestor lambda function is s3 based data ingestion pipeline that ingests CSV health data, validates them and sends processed results to S3 bucket and Eventbridge.
+- Lambda is triggered when we upload csv file to s3 bucket in raw/ folder.
+- The lambda then validated the input against required fields and acceptable ranges.
+- Valid data are sent to processed/ and invalid data are sent to rejected/
+- The lambda sends success or failure event to Eventbridge for orchestration of next step.
+
+#### Data analyzer lambda function:
+- Data analyzer lambda function analyzes processed data, detect anomalies, generate insights, recommendations and summary based on that data using LLM via Bedrock and saves the result for downstream process.
+- Lambda is invoked when a processed CSV file is ready in S3 bucket(processed/ prefix) or via Eventbridge trigger.
+- It fetches the processed data from S3 bucket and flags row with abnormal metrics.
+- It then sends prompt to Bedrock LLM to generate insights, recommendations, and executive summary.
+- It saves the analysis result in DynamoDB.
+- It notifies downstream process using Eventbridge after the analysis is complete.
+
+#### Data notifier lambda function:
+- This Lambda function is a reporting and notification service for your health monitoring system.
+- It fetches recent health analysis results from DynamoDB.
+- It then aggregates data processing statistics from S3 manifest files.
+- It extracts insights, recommendations, and summaries from the analysis.
+- It generates a detailed email report (text + HTML) with statistics, anomalies, insights, and recommendations.
+- It sends the email via Amazon SES.
+- It update DynamoDB records to mark that a notification was sent.

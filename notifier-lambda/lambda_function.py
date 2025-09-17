@@ -3,10 +3,9 @@ import boto3
 import os
 import json
 from datetime import datetime
-from decimal import Decimal
 from boto3.dynamodb.conditions import Key
 
-# -------- CONFIG --------
+#    CONFIG   
 dynamodb = boto3.resource("dynamodb")
 ses = boto3.client("ses")
 s3 = boto3.client("s3")
@@ -17,7 +16,7 @@ SES_RECIPIENTS = os.environ.get("SES_RECIPIENTS", "").split(",")
 BUCKET_NAME = os.environ.get("BUCKET_NAME")
 PROCESSED_PREFIX = os.environ.get("PROCESSED_PREFIX", "processed/")
 
-# -------- Logging --------
+#    Logging   
 def log(level, message, **kwargs):
     from decimal import Decimal
 
@@ -41,7 +40,7 @@ def log(level, message, **kwargs):
     safe_payload = convert(payload)
     print(json.dumps(safe_payload))
 
-# -------- Helper Functions for Row Counts --------
+#    Helper Functions for Row Counts   
 def fetch_manifest_data(correlation_ids):
     """Fetch processing statistics from manifest files stored in S3"""
     processing_stats = {
@@ -67,11 +66,6 @@ def fetch_manifest_data(correlation_ids):
                     filename_with_version = parts[-1]  # health_4a87f4fd83b34de5912885e0e7536c6a.csv@nrJlEYaQQCfBYFinSvQPG9bX7apq9mAJ
                     base_name = filename_with_version.split("@")[0]  # health_4a87f4fd83b34de5912885e0e7536c6a.csv
                     manifest_key = f"{PROCESSED_PREFIX}{base_name.replace('.csv','')}_manifest.json"
-                    
-                    log("DEBUG", "attempting_manifest_fetch", 
-                        correlation_id=correlation_id,
-                        manifest_key=manifest_key,
-                        bucket=BUCKET_NAME)
                 
                 try:
                     obj = s3.get_object(Bucket=BUCKET_NAME, Key=manifest_key)
@@ -120,7 +114,7 @@ def fetch_manifest_data(correlation_ids):
     
     return processing_stats
 
-# -------- DynamoDB Retrieval --------
+#    DynamoDB Retrieval   
 def fetch_recent_analysis(correlation_id=None, limit=10):
     table = dynamodb.Table(DDB_TABLE)
     
@@ -158,40 +152,40 @@ def fetch_recent_analysis(correlation_id=None, limit=10):
     return items
 
 # Alternative function using GSI (if you implement Option 1)
-def fetch_recent_analysis_with_gsi(correlation_id=None, limit=10):
-    table = dynamodb.Table(DDB_TABLE)
+# def fetch_recent_analysis_with_gsi(correlation_id=None, limit=10):
+#     table = dynamodb.Table(DDB_TABLE)
     
-    if correlation_id:
-        # Query specific correlation_id
-        response = table.query(
-            KeyConditionExpression=Key('correlation_id').eq(correlation_id),
-            ScanIndexForward=False,
-            Limit=limit
-        )
-        items = response.get("Items", [])
-    else:
-        # Use GSI to get items sorted by timestamp
-        response = table.scan(
-            IndexName='TimestampIndex',
-            Limit=limit * 3  # Get more items since we'll sort them
-        )
-        all_items = response.get("Items", [])
+#     if correlation_id:
+#         # Query specific correlation_id
+#         response = table.query(
+#             KeyConditionExpression=Key('correlation_id').eq(correlation_id),
+#             ScanIndexForward=False,
+#             Limit=limit
+#         )
+#         items = response.get("Items", [])
+#     else:
+#         # Use GSI to get items sorted by timestamp
+#         response = table.scan(
+#             IndexName='TimestampIndex',
+#             Limit=limit * 3  # Get more items since we'll sort them
+#         )
+#         all_items = response.get("Items", [])
         
-        # Sort by timestamp (newest first)
-        items = sorted(
-            all_items,
-            key=lambda x: x.get('analysis_timestamp', ''),
-            reverse=True
-        )[:limit]
+#         # Sort by timestamp (newest first)
+#         items = sorted(
+#             all_items,
+#             key=lambda x: x.get('analysis_timestamp', ''),
+#             reverse=True
+#         )[:limit]
     
-    log("INFO", "fetched_items_with_gsi", 
-        count=len(items),
-        correlation_id=correlation_id,
-        latest_timestamp=items[0].get('analysis_timestamp') if items else None)
+#     log("INFO", "fetched_items_with_gsi", 
+#         count=len(items),
+#         correlation_id=correlation_id,
+#         latest_timestamp=items[0].get('analysis_timestamp') if items else None)
     
-    return items
+#     return items
 
-# -------- Helper Functions --------
+#    Helper Functions   
 def extract_insights_and_recommendations(items):
     """Extract insights and recommendations from the most recent DynamoDB item only"""
     if not items:
@@ -200,21 +194,11 @@ def extract_insights_and_recommendations(items):
     # Only use the most recent item (first item after sorting)
     most_recent_item = items[0]
     
-    log("DEBUG", "processing_most_recent_item", 
-        correlation_id=most_recent_item.get("correlation_id", "unknown"),
-        timestamp=most_recent_item.get("analysis_timestamp", "unknown"),
-        has_insights=bool(most_recent_item.get("insights")),
-        has_recommendations=bool(most_recent_item.get("recommendations")))
-    
     # Extract insights from most recent analysis only
     insights = most_recent_item.get("insights", [])
-    if not (insights and isinstance(insights, list) and insights != ["No major trends observed"]):
-        insights = []
     
     # Extract recommendations from most recent analysis only
     recommendations = most_recent_item.get("recommendations", [])
-    if not (recommendations and isinstance(recommendations, list) and recommendations != ["No recommendations"]):
-        recommendations = []
     
     log("INFO", "extracted_data_from_latest", 
         insights_count=len(insights), 
@@ -259,7 +243,7 @@ def format_executive_summary(items):
     # Only use the first one (which should be the most recent)
     return "\n".join(summaries[:1])  # Just take the most recent summary
 
-# -------- SES Email --------
+#    SES Email   
 def send_email(subject, body_text, body_html):
     if not SES_SENDER or not SES_RECIPIENTS:
         log("ERROR", "SES_not_configured")
@@ -284,7 +268,7 @@ def send_email(subject, body_text, body_html):
         return False
         
 
-# -------- Lambda Handler --------
+#    Lambda Handler   
 def lambda_handler(event, context):
     correlation_id = event.get("correlation_id")  # optional filter
     items = fetch_recent_analysis(correlation_id=correlation_id, limit=5)
@@ -382,9 +366,6 @@ If you have concerns about any anomalies, please consult with a healthcare profe
     insights_html = "".join([f"<li>{insight}</li>" for insight in insights[:10]]) or "<li style='color: #7F8C8D;'>Continuing to monitor health patterns</li>"
     
     recommendations_html = "".join([f"<li>{rec}</li>" for rec in recommendations[:10]]) or "<li style='color: #7F8C8D;'>Continue regular health monitoring</li>"
-
-    # Format executive summary for HTML (preserve line breaks)
-    executive_summary_html = executive_summary.replace('\n', '<br>')
 
     # Determine quality status color
     quality_color = "#27AE60" if data_quality_pct >= 95 else "#F39C12" if data_quality_pct >= 85 else "#E74C3C"

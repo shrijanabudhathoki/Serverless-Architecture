@@ -10,7 +10,7 @@ from datetime import datetime
 from boto3.dynamodb.types import TypeSerializer
 from decimal import Decimal
 
-# -------- CONFIG --------
+#    CONFIG   
 s3 = boto3.client("s3")
 dynamodb = boto3.resource("dynamodb")
 bedrock = boto3.client("bedrock-runtime")
@@ -34,7 +34,7 @@ def convert_floats(obj):
     else:
         return obj
 
-# -------- Logging Utility --------
+#    Logging Utility   
 def log(level, message, **kwargs):
     payload = {
         "ts": datetime.utcnow().isoformat() + "Z",
@@ -55,7 +55,7 @@ def log(level, message, **kwargs):
         # Fallback: convert payload to string if JSON serialization still fails
         print(f"{payload['ts']} [{payload['level']}] {payload['message']} {kwargs}")
 
-# -------- Helper Functions --------
+#    Helper Functions   
 def marker_key(bucket, key, version_id):
     safe_key = key.replace("/", "__")
     return f"{MARKERS_PREFIX}{bucket}__{safe_key}__{version_id}.done"
@@ -135,7 +135,6 @@ def analyze_with_llm(rows, anomalies):
     # Calculate statistics
     stats = calculate_statistics(rows)
     
-    # Send only a sample + aggregated stats to Bedrock
     sample_text = json.dumps(rows[:20])
     anomaly_summary = f"{len(anomalies)} anomalies detected in {len(rows)} records."
     stats_summary = f"Statistics: Avg HR {stats.get('avg_heart_rate', 0)} bpm, Avg SpO2 {stats.get('avg_spo2', 0)}%, Avg Temp {stats.get('avg_temp', 0)}°C"
@@ -222,7 +221,7 @@ def send_event_to_eventbridge(event_type, detail, correlation_id):
     except Exception as e:
         log("ERROR", "failed_to_send_event", correlation_id=correlation_id, error=str(e))
 
-# -------- Serialize DynamoDB item --------
+#    Serialize DynamoDB item   
 def serialize_ddb_item(anomalies, llm_result, correlation_id, key, rows):
     """Create DynamoDB item with proper data types"""
     
@@ -254,7 +253,7 @@ def serialize_ddb_item(anomalies, llm_result, correlation_id, key, rows):
     }
     return convert_floats(item)
 
-# -------- Lambda Handler --------
+#    Lambda Handler   
 def lambda_handler(event, context):
     # Determine records and correlation_id
     if "source" in event and event.get("source") == "eventbridge":
