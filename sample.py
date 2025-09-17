@@ -93,7 +93,7 @@ if __name__ == "__main__":
     USE_DOWNLOADED_FILE = True
 
     if USE_DOWNLOADED_FILE:
-        dataset_path = "synthetic_health_data_1.csv"
+        dataset_path = "synthetic_health_data_2.csv"
         upload_file_to_s3(dataset_path)
 
     else:

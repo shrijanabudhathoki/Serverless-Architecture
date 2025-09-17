@@ -1,9 +1,10 @@
-# Data ingestor lambda function
+# Data ingestor lambda function (idempotent by content hash + file version)
 import boto3
 import csv
 import io
 import json
 import os
+import hashlib
 from datetime import datetime
 
 # -------- AWS Clients --------
@@ -40,9 +41,18 @@ def log(level, message, **kwargs):
     print(json.dumps(payload))
 
 # -------- Helper Functions --------
+def compute_hash(body_bytes):
+    """Return SHA256 hash of file content"""
+    return hashlib.sha256(body_bytes).hexdigest()
+
 def marker_key(bucket, key, version_id):
+    """Marker key based on bucket/key/version"""
     safe_key = key.replace("/", "__")
     return f"{MARKERS_PREFIX}{bucket}__{safe_key}__{version_id}.done"
+
+def marker_key_from_hash(file_hash):
+    """Marker key based on file content hash"""
+    return f"{MARKERS_PREFIX}{file_hash}.done"
 
 def object_exists(bucket, key):
     try:
@@ -125,9 +135,9 @@ def send_event_to_eventbridge(event_type, detail, correlation_id):
 def lambda_handler(event, context):
     """
     Handles S3 events and optional manual/EventBridge events.
+    Ensures idempotency by file version and content hash.
     """
 
-    
     # Determine if event is S3 notification or manual format
     if "Records" in event:
         records = event["Records"]
@@ -148,11 +158,30 @@ def lambda_handler(event, context):
         corr_id = f"{bucket}/{key}@{version_id}"
         log("INFO", "ingestion_started", correlation_id=corr_id)
 
-        # Idempotency marker
-        mkey = marker_key(bucket, key, version_id)
-        if object_exists(BUCKET_NAME, mkey):
-            log("INFO", "already_processed", correlation_id=corr_id, marker=mkey)
-            results.append({"correlation_id": corr_id, "status": "skipped", "reason": "already_processed"})
+        # Read file from S3
+        try:
+            obj = s3.get_object(Bucket=bucket, Key=key)
+            body_bytes = obj["Body"].read()
+            content = body_bytes.decode("utf-8").splitlines()
+        except Exception as e:
+            log("ERROR", "failed_to_read_file", correlation_id=corr_id, error=str(e))
+            continue
+
+        # Compute hash and markers
+        file_hash = compute_hash(body_bytes)
+        mkey_version = marker_key(bucket, key, version_id)
+        mkey_hash = marker_key_from_hash(file_hash)
+
+        # Check idempotency by version
+        if object_exists(BUCKET_NAME, mkey_version):
+            log("INFO", "already_processed_version", correlation_id=corr_id, marker=mkey_version)
+            results.append({"correlation_id": corr_id, "status": "skipped", "reason": "already_processed_version"})
+            continue
+
+        # Check idempotency by content hash
+        if object_exists(BUCKET_NAME, mkey_hash):
+            log("INFO", "already_processed_hash", correlation_id=corr_id, marker=mkey_hash)
+            results.append({"correlation_id": corr_id, "status": "skipped", "reason": "already_processed_hash"})
             continue
 
         if not key.startswith(RAW_PREFIX):
@@ -161,9 +190,7 @@ def lambda_handler(event, context):
             continue
 
         try:
-            # Read CSV from S3
-            obj = s3.get_object(Bucket=bucket, Key=key)
-            content = obj["Body"].read().decode("utf-8").splitlines()
+            # Parse CSV
             reader = csv.DictReader(content)
             fieldnames = reader.fieldnames
 
@@ -195,6 +222,7 @@ def lambda_handler(event, context):
                 "source_bucket": bucket,
                 "source_key": key,
                 "source_version": version_id,
+                "file_hash": file_hash,
                 "processed_key": processed_key,
                 "rejected_key": rejected_key,
                 "counts": {
@@ -209,13 +237,14 @@ def lambda_handler(event, context):
                           Body=json.dumps(manifest, indent=2).encode("utf-8"),
                           ContentType="application/json")
 
-            # Write marker for idempotency
-            s3.put_object(Bucket=BUCKET_NAME, Key=mkey, Body=b"")
+            # Write markers (both version + hash)
+            s3.put_object(Bucket=BUCKET_NAME, Key=mkey_version, Body=b"")
+            s3.put_object(Bucket=BUCKET_NAME, Key=mkey_hash, Body=b"")
 
             log("INFO", "ingestion_completed", correlation_id=corr_id,
                 processed_key=processed_key, rejected_key=rejected_key, manifest_key=manifest_key)
 
-            # Send success event to EventBridge for orchestration
+            # Send success event to EventBridge
             if valid_rows:  # Only trigger analysis if there are valid rows
                 event_detail = {
                     "correlation_id": corr_id,
