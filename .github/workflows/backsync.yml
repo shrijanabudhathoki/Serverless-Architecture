@@ -1,4 +1,4 @@
-name: Backsync UAT to Main
+name: Backsync UAT to Dev
 
 on:
   push:
