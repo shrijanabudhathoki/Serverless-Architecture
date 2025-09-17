@@ -186,7 +186,7 @@ def analyze_with_llm(rows, anomalies):
     
     COST_PER_1K_TOKENS = 0.00006	  # USD
     
-    usage = payload.get("usage", {})  # Some Bedrock responses include usage info
+    usage = payload.get("usage", {}) 
     prompt_tokens = usage.get("promptTokens", 0)
     completion_tokens = usage.get("completionTokens", 0)
     total_tokens = usage.get("totalTokens", 0)

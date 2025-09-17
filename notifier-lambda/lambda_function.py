@@ -4,6 +4,7 @@ import os
 import json
 from datetime import datetime
 from boto3.dynamodb.conditions import Key
+import time
 
 #    CONFIG   
 dynamodb = boto3.resource("dynamodb")
@@ -151,40 +152,6 @@ def fetch_recent_analysis(correlation_id=None, limit=10):
     
     return items
 
-# Alternative function using GSI (if you implement Option 1)
-# def fetch_recent_analysis_with_gsi(correlation_id=None, limit=10):
-#     table = dynamodb.Table(DDB_TABLE)
-    
-#     if correlation_id:
-#         # Query specific correlation_id
-#         response = table.query(
-#             KeyConditionExpression=Key('correlation_id').eq(correlation_id),
-#             ScanIndexForward=False,
-#             Limit=limit
-#         )
-#         items = response.get("Items", [])
-#     else:
-#         # Use GSI to get items sorted by timestamp
-#         response = table.scan(
-#             IndexName='TimestampIndex',
-#             Limit=limit * 3  # Get more items since we'll sort them
-#         )
-#         all_items = response.get("Items", [])
-        
-#         # Sort by timestamp (newest first)
-#         items = sorted(
-#             all_items,
-#             key=lambda x: x.get('analysis_timestamp', ''),
-#             reverse=True
-#         )[:limit]
-    
-#     log("INFO", "fetched_items_with_gsi", 
-#         count=len(items),
-#         correlation_id=correlation_id,
-#         latest_timestamp=items[0].get('analysis_timestamp') if items else None)
-    
-#     return items
-
 #    Helper Functions   
 def extract_insights_and_recommendations(items):
     """Extract insights and recommendations from the most recent DynamoDB item only"""
@@ -244,28 +211,36 @@ def format_executive_summary(items):
     return "\n".join(summaries[:1])  # Just take the most recent summary
 
 #    SES Email   
-def send_email(subject, body_text, body_html):
+
+def send_email(subject, body_text, body_html, retries=3, delay=2):
     if not SES_SENDER or not SES_RECIPIENTS:
         log("ERROR", "SES_not_configured")
         return False
 
-    try:
-        ses.send_email(
-            Source=SES_SENDER,
-            Destination={"ToAddresses": [r.strip() for r in SES_RECIPIENTS if r.strip()]},
-            Message={
-                "Subject": {"Data": subject, "Charset": "UTF-8"},
-                "Body": {
-                    "Text": {"Data": body_text, "Charset": "UTF-8"},
-                    "Html": {"Data": body_html, "Charset": "UTF-8"},
-                },
-            }
-        )
-        log("INFO", "email_sent", subject=subject, recipients=len(SES_RECIPIENTS))
-        return True
-    except Exception as e:
-        log("ERROR", "email_failed", error=str(e))
-        return False
+    recipients = [r.strip() for r in SES_RECIPIENTS if r.strip()]
+
+    for attempt in range(retries):
+        try:
+            ses.send_email(
+                Source=SES_SENDER,
+                Destination={"ToAddresses": recipients},
+                Message={
+                    "Subject": {"Data": subject, "Charset": "UTF-8"},
+                    "Body": {
+                        "Text": {"Data": body_text, "Charset": "UTF-8"},
+                        "Html": {"Data": body_html, "Charset": "UTF-8"},
+                    },
+                }
+            )
+            log("INFO", "email_sent", subject=subject, recipients=len(recipients))
+            return True
+        except Exception as e:
+            log("ERROR", "email_failed", error=str(e), attempt=attempt + 1)
+            if attempt < retries - 1:
+                time.sleep(delay * (2 ** attempt))  # exponential backoff
+            else:
+                return False
+
         
 
 #    Lambda Handler   
