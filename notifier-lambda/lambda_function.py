@@ -53,20 +53,25 @@ def fetch_manifest_data(correlation_ids):
     }
     
     if not BUCKET_NAME:
-        log("WARN", "bucket_name_not_configured")
+        log("WARN", "bucket_name_not_configured", 
+            note="Set BUCKET_NAME environment variable to enable processing statistics")
         return processing_stats
     
     for correlation_id in correlation_ids:
         try:
             # Extract original filename from correlation_id format: bucket/key@version
             if "/" in correlation_id and "@" in correlation_id:
-                key_part = correlation_id.split("/", 1)[1].split("@")[0]
-                base_name = os.path.basename(key_part)
-                manifest_key = f"{PROCESSED_PREFIX}{base_name.replace('.csv','')}_manifest.json"
-                
-                log("DEBUG", "attempting_manifest_fetch", 
-                    correlation_id=correlation_id,
-                    manifest_key=manifest_key)
+                # Parse correlation_id: health-data-bucket-shrijana/raw/health_4a87f4fd83b34de5912885e0e7536c6a.csv@nrJlEYaQQCfBYFinSvQPG9bX7apq9mAJ
+                parts = correlation_id.split("/")
+                if len(parts) >= 3:  # bucket/prefix/filename@version
+                    filename_with_version = parts[-1]  # health_4a87f4fd83b34de5912885e0e7536c6a.csv@nrJlEYaQQCfBYFinSvQPG9bX7apq9mAJ
+                    base_name = filename_with_version.split("@")[0]  # health_4a87f4fd83b34de5912885e0e7536c6a.csv
+                    manifest_key = f"{PROCESSED_PREFIX}{base_name.replace('.csv','')}_manifest.json"
+                    
+                    log("DEBUG", "attempting_manifest_fetch", 
+                        correlation_id=correlation_id,
+                        manifest_key=manifest_key,
+                        bucket=BUCKET_NAME)
                 
                 try:
                     obj = s3.get_object(Bucket=BUCKET_NAME, Key=manifest_key)

@@ -83,7 +83,14 @@ resource "aws_iam_role_policy" "notifier_policy" {
         Effect   = "Allow"
         Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "*"
-      }
+      },
+      {
+        Effect   = "Allow",
+        Action   = [
+            "s3:GetObject"
+        ],
+        Resource = "arn:aws:s3:::health-data-bucket-shrijana/*"
+    }
     ]
   })
 }
