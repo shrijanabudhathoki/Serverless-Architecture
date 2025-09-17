@@ -1,380 +1,656 @@
-# Data analyzer lambda function
-
+# Notifier Lambda Function
 import boto3
-import csv
-import json
 import os
-import time
-import uuid
+import json
 from datetime import datetime
-from boto3.dynamodb.types import TypeSerializer
 from decimal import Decimal
+from boto3.dynamodb.conditions import Key
 
 # -------- CONFIG --------
-s3 = boto3.client("s3")
 dynamodb = boto3.resource("dynamodb")
-bedrock = boto3.client("bedrock-runtime")
-eventbridge = boto3.client("events")
-serializer = TypeSerializer()
+ses = boto3.client("ses")
+s3 = boto3.client("s3")
 
-BUCKET_NAME      = os.environ.get("BUCKET_NAME")
+DDB_TABLE = os.environ.get("DDB_TABLE", "health_analysis")
+SES_SENDER = os.environ.get("SES_SENDER")
+SES_RECIPIENTS = os.environ.get("SES_RECIPIENTS", "").split(",")
+BUCKET_NAME = os.environ.get("BUCKET_NAME")
 PROCESSED_PREFIX = os.environ.get("PROCESSED_PREFIX", "processed/")
-ANALYSIS_PREFIX  = os.environ.get("ANALYSIS_PREFIX", "analyzed/")
-MARKERS_PREFIX   = os.environ.get("MARKERS_PREFIX", "markers/")
-DDB_TABLE        = os.environ.get("DDB_TABLE", "health_analysis")
-EVENT_BUS_NAME   = os.environ.get("EVENT_BUS_NAME")
 
-def convert_floats(obj):
-    if isinstance(obj, list):
-        return [convert_floats(i) for i in obj]
-    elif isinstance(obj, dict):
-        return {k: convert_floats(v) for k, v in obj.items()}
-    elif isinstance(obj, float):
-        return Decimal(str(obj))  # Safe conversion
-    else:
-        return obj
-
-# -------- Logging Utility --------
+# -------- Logging --------
 def log(level, message, **kwargs):
+    from decimal import Decimal
+
+    def convert(obj):
+        if isinstance(obj, Decimal):
+            # Convert integer-like Decimals to int, others to float
+            return int(obj) if obj % 1 == 0 else float(obj)
+        elif isinstance(obj, dict):
+            return {k: convert(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert(i) for i in obj]
+        else:
+            return obj
+
     payload = {
         "ts": datetime.utcnow().isoformat() + "Z",
         "level": level,
         "message": message
     }
     payload.update(kwargs)
+    safe_payload = convert(payload)
+    print(json.dumps(safe_payload))
+
+# -------- DynamoDB Retrieval --------
+def fetch_recent_analysis(correlation_id=None, limit=10):
+    table = dynamodb.Table(DDB_TABLE)
     
-    # Convert Decimal objects to regular numbers for JSON serialization
-    def decimal_default(obj):
-        if isinstance(obj, Decimal):
-            return float(obj)
-        raise TypeError
+    if correlation_id:
+        # Query specific correlation_id and get latest analysis
+        response = table.query(
+            KeyConditionExpression=Key('correlation_id').eq(correlation_id),
+            ScanIndexForward=False,  # Sort by range key (analysis_id) descending
+            Limit=limit
+        )
+        items = response.get("Items", [])
+    else:
+        # Get all recent items and sort them by timestamp
+        response = table.scan()
+        all_items = response.get("Items", [])
+        
+        # Continue scanning if there are more items
+        while 'LastEvaluatedKey' in response:
+            response = table.scan(ExclusiveStartKey=response['LastEvaluatedKey'])
+            all_items.extend(response.get("Items", []))
+        
+        # Sort by analysis_timestamp (newest first) and take the limit
+        items = sorted(
+            all_items,
+            key=lambda x: x.get('analysis_timestamp', ''),
+            reverse=True
+        )[:limit]
     
-    try:
-        print(json.dumps(payload, default=decimal_default))
-    except TypeError:
-        # Fallback: convert payload to string if JSON serialization still fails
-        print(f"{payload['ts']} [{payload['level']}] {payload['message']} {kwargs}")
+    log("INFO", "fetched_items", 
+        count=len(items),
+        correlation_id=correlation_id,
+        sample_keys=list(items[0].keys()) if items else [],
+        latest_timestamp=items[0].get('analysis_timestamp') if items else None)
+    
+    return items
 
 # -------- Helper Functions --------
-def marker_key(bucket, key, version_id):
-    safe_key = key.replace("/", "__")
-    return f"{MARKERS_PREFIX}{bucket}__{safe_key}__{version_id}.done"
+def extract_insights_and_recommendations(items):
+    """Extract insights and recommendations from the most recent DynamoDB item only"""
+    if not items:
+        return [], []
+    
+    # Only use the most recent item (first item after sorting)
+    most_recent_item = items[0]
+    
+    log("DEBUG", "processing_most_recent_item", 
+        correlation_id=most_recent_item.get("correlation_id", "unknown"),
+        timestamp=most_recent_item.get("analysis_timestamp", "unknown"),
+        has_insights=bool(most_recent_item.get("insights")),
+        has_recommendations=bool(most_recent_item.get("recommendations")))
+    
+    # Extract insights from most recent analysis only
+    insights = most_recent_item.get("insights", [])
+    if not (insights and isinstance(insights, list) and insights != ["No major trends observed"]):
+        insights = []
+    
+    # Extract recommendations from most recent analysis only
+    recommendations = most_recent_item.get("recommendations", [])
+    if not (recommendations and isinstance(recommendations, list) and recommendations != ["No recommendations"]):
+        recommendations = []
+    
+    log("INFO", "extracted_data_from_latest", 
+        insights_count=len(insights), 
+        recommendations_count=len(recommendations),
+        analysis_timestamp=most_recent_item.get("analysis_timestamp", "unknown"))
+    
+    return insights, recommendations
 
-def object_exists(bucket, key):
+def format_executive_summary(items):
+    summaries = []
+
+    for item in items:
+        summary_val = item.get("summary", {})
+        text_summary = ""
+
+        if isinstance(summary_val, dict):
+            # Extract only health_status + key_findings
+            health_status = summary_val.get("health_status", "")
+            key_findings = summary_val.get("key_findings", {})
+
+            findings_texts = []
+            if isinstance(key_findings, dict):
+                for v in key_findings.values():
+                    if isinstance(v, str):
+                        findings_texts.append(v)
+
+            if health_status:
+                text_summary = health_status.strip()
+            if findings_texts:
+                text_summary += " Key findings: " + " ".join(f.strip() for f in findings_texts)
+
+        elif isinstance(summary_val, str):
+            # Old format: if summary is already a plain string
+            text_summary = summary_val.strip()
+
+        if text_summary and text_summary != "Analysis completed.":
+            summaries.append(text_summary)
+
+    if not summaries:
+        return "Health data analysis completed successfully. Regular monitoring continues."
+
+    # Only use the first one (which should be the most recent)
+    return "\n".join(summaries[:1])  # Just take the most recent summary
+
+def fetch_processing_counts_from_manifest(correlation_id):
+    """Extract processing counts from manifest based on correlation_id"""
+    if not correlation_id:
+        return {"input": 0, "valid": 0, "rejected": 0}
+    
     try:
-        s3.head_object(Bucket=bucket, Key=key)
-        return True
-    except s3.exceptions.ClientError:
+        # Extract source info from correlation_id format: bucket/key@version
+        if "@" in correlation_id:
+            source_path, version = correlation_id.split("@", 1)
+            if "/" in source_path:
+                bucket, source_key = source_path.split("/", 1)
+                
+                # Convert raw key to manifest key 
+                # raw/health_data.csv -> processed/health_data_manifest.json
+                if source_key.startswith("raw/"):
+                    base_name = os.path.basename(source_key).replace('.csv', '')
+                    manifest_key = f"{PROCESSED_PREFIX}{base_name}_manifest.json"
+                    
+                    log("INFO", "fetching_manifest", 
+                        correlation_id=correlation_id, 
+                        manifest_key=manifest_key)
+                    
+                    obj = s3.get_object(Bucket=BUCKET_NAME, Key=manifest_key)
+                    manifest = json.loads(obj["Body"].read().decode("utf-8"))
+                    counts = manifest.get("counts", {"input": 0, "valid": 0, "rejected": 0})
+                    
+                    log("INFO", "manifest_counts_retrieved", 
+                        correlation_id=correlation_id, 
+                        counts=counts)
+                    return counts
+    except Exception as e:
+        log("WARN", "failed_to_fetch_manifest_counts", 
+            correlation_id=correlation_id, 
+            error=str(e))
+    
+    return {"input": 0, "valid": 0, "rejected": 0}
+
+def aggregate_processing_counts(items):
+    """Aggregate processing counts from multiple analysis items"""
+    total_counts = {"input": 0, "valid": 0, "rejected": 0}
+    
+    for item in items:
+        correlation_id = item.get("correlation_id")
+        if correlation_id:
+            counts = fetch_processing_counts_from_manifest(correlation_id)
+            total_counts["input"] += counts.get("input", 0)
+            total_counts["valid"] += counts.get("valid", 0)  
+            total_counts["rejected"] += counts.get("rejected", 0)
+    
+    log("INFO", "aggregated_processing_counts", 
+        total_counts=total_counts, 
+        items_processed=len(items))
+    
+    return total_counts
+
+# -------- SES Email --------
+def send_email(subject, body_text, body_html):
+    if not SES_SENDER or not SES_RECIPIENTS:
+        log("ERROR", "SES_not_configured")
         return False
 
-def csv_to_dicts(bucket, key):
-    obj = s3.get_object(Bucket=bucket, Key=key)
-    content = obj["Body"].read().decode("utf-8").splitlines()
-    reader = csv.DictReader(content)
-    return list(reader), reader.fieldnames
-
-def detect_anomalies(rows):
-    anomalies = []
-    for row in rows:
-        anomaly_reasons = []
-        hr = int(row["heart_rate"])
-        spo2 = int(row["spo2"])
-        temp = float(row["temp_c"])
-        sys = int(row["systolic_bp"])
-        dia = int(row["diastolic_bp"])
-
-        if hr < 60 or hr > 160:
-            anomaly_reasons.append("Abnormal heart rate")
-        if spo2 < 92:
-            anomaly_reasons.append("Low SpO2")
-        if temp > 38.0:
-            anomaly_reasons.append("High temperature")
-        if sys > 140 or dia > 90:
-            anomaly_reasons.append("High blood pressure")
-
-        if anomaly_reasons:
-            anomalies.append({
-                "event_time": row["event_time"],
-                "user_id": row["user_id"],
-                "heart_rate": hr,
-                "spo2": spo2,
-                "steps": int(row["steps"]),
-                "temp_c": temp,
-                "systolic_bp": sys,
-                "diastolic_bp": dia,
-                "anomaly": ", ".join(anomaly_reasons)
-            })
-    return anomalies
-
-def calculate_statistics(rows):
-    """Calculate basic statistics from the health data"""
-    if not rows:
-        return {}
-    
-    heart_rates = [int(row["heart_rate"]) for row in rows]
-    spo2_values = [int(row["spo2"]) for row in rows]
-    temps = [float(row["temp_c"]) for row in rows]
-    sys_bp = [int(row["systolic_bp"]) for row in rows]
-    dia_bp = [int(row["diastolic_bp"]) for row in rows]
-    steps = [int(row["steps"]) for row in rows]
-    
-    return {
-        "avg_heart_rate": round(sum(heart_rates) / len(heart_rates), 1),
-        "avg_spo2": round(sum(spo2_values) / len(spo2_values), 1),
-        "avg_temp": round(sum(temps) / len(temps), 1),
-        "avg_systolic": round(sum(sys_bp) / len(sys_bp), 1),
-        "avg_diastolic": round(sum(dia_bp) / len(dia_bp), 1),
-        "avg_steps": round(sum(steps) / len(steps), 0),
-        "max_heart_rate": max(heart_rates),
-        "min_heart_rate": min(heart_rates),
-        "max_temp": max(temps),
-        "min_spo2": min(spo2_values)
-    }
-
-def analyze_with_llm(rows, anomalies):
-    # Calculate statistics
-    stats = calculate_statistics(rows)
-    
-    # Send only a sample + aggregated stats to Bedrock
-    sample_text = json.dumps(rows[:20])
-    anomaly_summary = f"{len(anomalies)} anomalies detected in {len(rows)} records."
-    stats_summary = f"Statistics: Avg HR {stats.get('avg_heart_rate', 0)} bpm, Avg SpO2 {stats.get('avg_spo2', 0)}%, Avg Temp {stats.get('avg_temp', 0)}°C"
-
-    prompt = (
-        "You are a health data analysis assistant. "
-        "Analyze the health metrics and provide insights about trends, patterns, and health risks.\n\n"
-
-        f"Dataset Overview:\n"
-        f"- Total records: {len(rows)}\n"
-        f"- {anomaly_summary}\n"
-        f"- {stats_summary}\n\n"
-
-        f"Sample health records:\n{sample_text}\n\n"
-
-        "Provide analysis in JSON format with these keys:\n"
-        "- insights: Array of specific health observations (e.g., 'Average heart rate of 123 bpm indicates elevated cardiovascular activity')\n"
-        "- recommendations: Array of actionable health advice (e.g., 'Consult cardiologist for persistent high heart rate readings')\n"
-        "- summary: Executive summary of key findings and health status\n\n"
-        
-        "Focus on:\n"
-        "1. Cardiovascular health patterns\n"
-        "2. Respiratory health (SpO2 trends)\n"
-        "3. Temperature anomalies and fever patterns\n"
-        "4. Blood pressure health risks\n"
-        "5. Activity level assessment\n\n"
-        
-        "Return only valid JSON."
-    )
-
-    response = bedrock.invoke_model(
-        modelId=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-3-sonnet-20240229-v1:0"),
-        contentType="application/json",
-        accept="application/json",
-        body=json.dumps({
-            "messages": [
-                {"role": "user", "content": [{"text": prompt}]}
-            ],
-            "inferenceConfig": {"maxTokens": 800, "temperature": 0.3}
-        })
-    )
-    raw = response["body"].read()
-    payload = json.loads(raw)
-    output_text = payload["output"]["message"]["content"][0]["text"]
-
-    # Clean up the output text (remove markdown formatting if present)
-    if output_text.startswith('```json'):
-        output_text = output_text.replace('```json', '').replace('```', '').strip()
-    
-    result = json.loads(output_text)
-    log("INFO", "llm_analysis_success", insights_count=len(result.get("insights", [])), recommendations_count=len(result.get("recommendations", [])))
-        
-    return {
-        "insights": result.get("insights", []),
-        "recommendations": result.get("recommendations", []),
-        "summary": result.get("summary", "Analysis completed.")
-    }
-
-def save_to_dynamodb(item):
-    table = dynamodb.Table(DDB_TABLE)
     try:
-        table.put_item(Item=item)
-        log("INFO", "dynamodb_save_success", correlation_id=item.get("correlation_id"))
-    except Exception as e:
-        log("ERROR", "dynamodb_save_failed", error=str(e), correlation_id=item.get("correlation_id"))
-        raise
-
-def send_event_to_eventbridge(event_type, detail, correlation_id):
-    try:
-        response = eventbridge.put_events(
-            Entries=[
-                {
-                    'Source': 'health.data.analyzer',
-                    'DetailType': event_type,
-                    'Detail': json.dumps(detail),
-                    'EventBusName': EVENT_BUS_NAME
-                }
-            ]
+        ses.send_email(
+            Source=SES_SENDER,
+            Destination={"ToAddresses": [r.strip() for r in SES_RECIPIENTS if r.strip()]},
+            Message={
+                "Subject": {"Data": subject, "Charset": "UTF-8"},
+                "Body": {
+                    "Text": {"Data": body_text, "Charset": "UTF-8"},
+                    "Html": {"Data": body_html, "Charset": "UTF-8"},
+                },
+            }
         )
-        log("INFO", "event_sent_to_eventbridge", 
-            correlation_id=correlation_id, 
-            event_type=event_type,
-            event_id=response['Entries'][0].get('EventId'))
+        log("INFO", "email_sent", subject=subject, recipients=len(SES_RECIPIENTS))
+        return True
     except Exception as e:
-        log("ERROR", "failed_to_send_event", correlation_id=correlation_id, error=str(e))
-
-# -------- Serialize DynamoDB item --------
-def serialize_ddb_item(anomalies, llm_result, correlation_id, key, rows):
-    """Create DynamoDB item with proper data types"""
-    
-    # Ensure we have valid insights and recommendations
-    insights = llm_result.get("insights", [])
-    recommendations = llm_result.get("recommendations", [])
-    summary = llm_result.get("summary", "Analysis completed.")
-    
-    log("INFO", "serializing_item", 
-        correlation_id=correlation_id,
-        insights_count=len(insights),
-        recommendations_count=len(recommendations),
-        summary_length=len(summary))
-
-    item = {
-        "correlation_id": correlation_id,
-        "analysis_id": f"analysis_{int(time.time())}_{uuid.uuid4().hex[:8]}",
-        "analysis_timestamp": datetime.utcnow().isoformat() + "Z",
-        "source_file": key,
-        "processed_file": key.replace("raw/", "processed/"),
-        "records_analyzed": len(rows),
-        "anomalies": anomalies,
-        "insights": insights,  # Direct assignment - no fallback logic here
-        "recommendations": recommendations,  # Direct assignment - no fallback logic here
-        "summary": summary,
-        "notification_sent": False,
-        "notification_timestamp": None,
-        "ttl": int(time.time()) + 7*24*3600
-    }
-    return convert_floats(item)
+        log("ERROR", "email_failed", error=str(e))
+        return False
 
 # -------- Lambda Handler --------
 def lambda_handler(event, context):
-    # Determine records and correlation_id
-    if "source" in event and event.get("source") == "eventbridge":
-        records = [{"s3": {"bucket": {"name": event["bucket"]}, 
-                           "object": {"key": event["key"], "versionId": event.get("versionId", "null")}}}]
-        correlation_id = event.get("correlation_id", "unknown")
-    elif "Records" in event:
-        records = event["Records"]
-        correlation_id = None
-    elif "bucket" in event and "key" in event:
-        records = [{"s3": {"bucket": {"name": event["bucket"]}, 
-                           "object": {"key": event["key"], "versionId": event.get("versionId", "null")}}}]
-        correlation_id = event.get("correlation_id", "unknown")
+    correlation_id = event.get("correlation_id")  # optional filter
+    items = fetch_recent_analysis(correlation_id=correlation_id, limit=5)
+
+    if not items:
+        log("INFO", "no_analysis_found", correlation_id=correlation_id)
+        return {"status": "no_data", "message": "No analysis data found"}
+
+    log("INFO", "processing_recent_items", 
+        item_count=len(items),
+        newest_timestamp=items[0].get('analysis_timestamp') if items else None,
+        oldest_timestamp=items[-1].get('analysis_timestamp') if items else None)
+
+    # Get data processing counts from EventBridge event detail or fetch from S3 manifests
+    detail = event.get("detail", {})
+    if detail.get("counts"):
+        # If counts are provided in the event (from EventBridge trigger)
+        counts = detail["counts"]
+        raw_count = counts.get("input", 0)
+        valid_count = counts.get("valid", 0)
+        rejected_count = counts.get("rejected", 0)
     else:
-        log("ERROR", "invalid_event_format", event=event)
-        return {"status": "failed", "reason": "invalid_event_format"}
+        # Aggregate counts from all manifests for the analysis items
+        aggregated_counts = aggregate_processing_counts(items)
+        raw_count = aggregated_counts["input"]
+        valid_count = aggregated_counts["valid"]
+        rejected_count = aggregated_counts["rejected"]
 
-    results = []
+    # Aggregate analysis results
+    total_rows = sum(item.get("records_analyzed", 0) for item in items)
+    total_anomalies = sum(len(item.get("anomalies", [])) for item in items)
 
-    for rec in records:
-        bucket = rec["s3"]["bucket"]["name"]
-        key    = rec["s3"]["object"]["key"]
-        version_id = rec["s3"]["object"].get("versionId", "null")
-        corr_id = correlation_id if correlation_id else f"{bucket}/{key}@{version_id}"
+    # Build anomaly frequency
+    top_anomalies = {}
+    for item in items:
+        for anomaly in item.get("anomalies", []):
+            key = anomaly.get("anomaly", "Unknown")
+            top_anomalies[key] = top_anomalies.get(key, 0) + 1
 
-        log("INFO", "analysis_started", correlation_id=corr_id)
+    # Sort anomalies by frequency (most common first)
+    sorted_anomalies = sorted(top_anomalies.items(), key=lambda x: x[1], reverse=True)
 
-        # Idempotency check
-        mkey = marker_key(bucket, key, version_id)
-        if object_exists(BUCKET_NAME, mkey):
-            log("INFO", "already_analyzed", correlation_id=corr_id, marker=mkey)
-            results.append({"correlation_id": corr_id, "status": "skipped", "reason": "already_analyzed"})
-            continue
+    # Extract insights and recommendations
+    insights, recommendations = extract_insights_and_recommendations(items)
+    
+    # Generate executive summary
+    executive_summary = format_executive_summary(items)
 
-        # Skip non-processed prefix
-        if not key.startswith(PROCESSED_PREFIX):
-            log("INFO", "skip_non_processed_prefix", correlation_id=corr_id)
-            results.append({"correlation_id": corr_id, "status": "skipped", "reason": "non_processed_prefix"})
-            continue
+    # Calculate data quality percentage
+    data_quality_percentage = round((valid_count / raw_count * 100) if raw_count > 0 else 0, 1)
 
-        try:
-            rows, _ = csv_to_dicts(bucket, key)
-            if not rows:
-                log("INFO", "no_data_to_analyze", correlation_id=corr_id)
-                results.append({"correlation_id": corr_id, "status": "skipped", "reason": "no_data"})
-                continue
+    log("INFO", "email_data_prepared", 
+        total_rows=total_rows, 
+        total_anomalies=total_anomalies,
+        raw_count=raw_count,
+        valid_count=valid_count,
+        rejected_count=rejected_count,
+        data_quality_percentage=data_quality_percentage,
+        insights_count=len(insights),
+        recommendations_count=len(recommendations),
+        anomaly_types=len(sorted_anomalies))
 
-            # 1. Detect anomalies per row
-            anomalies = detect_anomalies(rows)
+    # Email content
+    subject = f"Health Data Analysis Report - {datetime.utcnow().strftime('%B %d, %Y')}"
+    
+    # Format content for email
+    anomalies_text = "\n".join([f"  • {anomaly}: {count} occurrences" for anomaly, count in sorted_anomalies[:10]]) or "  • No anomalies detected"
+    insights_text = "\n".join([f"  • {insight}" for insight in insights[:10]]) or "  • Continuing to monitor health patterns"
+    recommendations_text = "\n".join([f"  • {rec}" for rec in recommendations[:10]]) or "  • Continue regular health monitoring"
 
-            # 2. Get insights/summary from Bedrock
-            llm_result = analyze_with_llm(rows, anomalies)
-            
-            log("INFO", "llm_analysis_completed", 
-                correlation_id=corr_id,
-                insights=len(llm_result.get("insights", [])),
-                recommendations=len(llm_result.get("recommendations", [])))
+    body_text = f"""Health Data Analysis Report
+Generated on: {datetime.utcnow().strftime('%B %d, %Y at %I:%M %p UTC')}
+Based on analysis from: {items[0].get('analysis_timestamp', 'Unknown') if items else 'Unknown'}
 
-            # 3. Save results to DynamoDB
-            ddb_item = serialize_ddb_item(anomalies, llm_result, corr_id, key, rows)
-            save_to_dynamodb(ddb_item)
+=== DATA PROCESSING OVERVIEW ===
+Raw Records Received: {raw_count:,}
+Valid Records Processed: {valid_count:,}
+Invalid/Rejected Records: {rejected_count:,}
+Data Quality Score: {data_quality_percentage}%
 
-            # 4. Upload full analysis (anomalies + summary) to S3
-            analysis_output = {
-                "correlation_id": corr_id,
-                "analysis_timestamp": datetime.utcnow().isoformat() + "Z",
-                "records_analyzed": len(rows),
-                "anomalies": anomalies,
-                "insights": llm_result["insights"],
-                "recommendations": llm_result["recommendations"],
-                "summary": llm_result["summary"]
-            }
-            analysis_key = f"{ANALYSIS_PREFIX}{os.path.basename(key).replace('.csv','')}_analysis.json"
-            s3.put_object(
-                Bucket=BUCKET_NAME,
-                Key=analysis_key,
-                Body=json.dumps(analysis_output, indent=2).encode("utf-8"),
-                ContentType="application/json"
-            )
+=== ANALYSIS OVERVIEW ===
+Total Health Records Analyzed: {total_rows:,}
+Total Anomalies Detected: {total_anomalies:,}
+Analysis Period: {len(items)} recent analysis runs
 
-            # Write idempotency marker
-            s3.put_object(Bucket=BUCKET_NAME, Key=mkey, Body=b"")
+=== TOP HEALTH ANOMALIES ===
+{anomalies_text}
 
-            log("INFO", "analysis_completed",
-                correlation_id=corr_id,
-                analysis_key=analysis_key,
-                rows_analyzed=len(rows),
-                anomalies_detected=len(anomalies),
-                dynamodb_table=DDB_TABLE)
+=== KEY HEALTH INSIGHTS ===
+{insights_text}
 
-            # Send EventBridge event
-            event_detail = {
-                "correlation_id": corr_id,
-                "bucket": BUCKET_NAME,
-                "source_key": key,
-                "analysis_key": analysis_key,
-                "row_count": len(rows),
-                "anomaly_count": len(anomalies),
-                "status": "success",
-                "summary": llm_result.get("summary", "Analysis completed")
-            }
-            send_event_to_eventbridge("Data Analysis Complete", event_detail, corr_id)
+=== RECOMMENDATIONS ===
+{recommendations_text}
 
-            results.append({
-                "correlation_id": corr_id,
-                "status": "success",
-                "analysis_key": analysis_key,
-                "rows_analyzed": len(rows),
-                "anomalies_detected": len(anomalies)
-            })
+=== EXECUTIVE SUMMARY ===
+{executive_summary}
 
-        except Exception as e:
-            log("ERROR", "analysis_failed", correlation_id=corr_id, error=str(e))
-            send_event_to_eventbridge("Data Analysis Failed", {
-                "correlation_id": corr_id,
-                "bucket": bucket,
-                "source_key": key,
-                "status": "failed",
-                "error": str(e)
-            }, corr_id)
-            results.append({"correlation_id": corr_id, "status": "failed", "error": str(e)})
+This report is automatically generated from your health monitoring system.
+If you have concerns about any anomalies, please consult with a healthcare professional.
+"""
 
-    return {"status": "ok", "results": results}
+    # HTML version with better formatting
+    anomalies_table_rows = "".join([
+        f"<tr><td>{anomaly}</td><td style='text-align: center;'><strong>{count}</strong></td></tr>" 
+        for anomaly, count in sorted_anomalies[:10]
+    ]) or "<tr><td colspan='2' style='text-align: center; color: #2ECC71;'>No anomalies detected</td></tr>"
+
+    insights_html = "".join([f"<li>{insight}</li>" for insight in insights[:10]]) or "<li style='color: #7F8C8D;'>Continuing to monitor health patterns</li>"
+    
+    recommendations_html = "".join([f"<li>{rec}</li>" for rec in recommendations[:10]]) or "<li style='color: #7F8C8D;'>Continue regular health monitoring</li>"
+
+    # Format executive summary for HTML (preserve line breaks)
+    executive_summary_html = executive_summary.replace('\n', '<br>')
+
+    body_html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body {{ 
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+                line-height: 1.6; 
+                color: #333; 
+                max-width: 800px; 
+                margin: 0 auto; 
+                padding: 20px;
+                background-color: #f8f9fa;
+            }}
+            .container {{ 
+                background: white; 
+                padding: 30px; 
+                border-radius: 10px; 
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1); 
+            }}
+            .header {{ 
+                text-align: center; 
+                margin-bottom: 30px; 
+                padding-bottom: 20px; 
+                border-bottom: 3px solid #3498DB; 
+            }}
+            h1 {{ 
+                color: #2C3E50; 
+                margin-bottom: 10px; 
+                font-size: 28px; 
+            }}
+            .subtitle {{ 
+                color: #7F8C8D; 
+                font-size: 14px; 
+                margin: 0; 
+            }}
+            .metrics {{ 
+                display: flex; 
+                justify-content: space-around; 
+                margin: 20px 0; 
+                padding: 20px; 
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                border-radius: 8px; 
+                color: white; 
+                flex-wrap: wrap;
+            }}
+            .metric {{ 
+                text-align: center; 
+                margin: 0 10px 15px 10px;
+                min-width: 120px;
+            }}
+            .metric-number {{ 
+                font-size: 28px; 
+                font-weight: bold; 
+                display: block; 
+            }}
+            .metric-label {{ 
+                font-size: 11px; 
+                opacity: 0.9; 
+                line-height: 1.3;
+            }}
+            .data-quality-section {{
+                background: linear-gradient(135deg, #00b894, #00a085);
+                color: white;
+                padding: 20px;
+                border-radius: 8px;
+                margin: 20px 0;
+                display: flex;
+                justify-content: space-around;
+                flex-wrap: wrap;
+            }}
+            .quality-metric {{
+                text-align: center;
+                margin: 0 15px 10px 15px;
+                min-width: 100px;
+            }}
+            .quality-number {{
+                font-size: 24px;
+                font-weight: bold;
+                display: block;
+            }}
+            .quality-label {{
+                font-size: 11px;
+                opacity: 0.9;
+                line-height: 1.3;
+            }}
+            .quality-score {{
+                font-size: 36px !important;
+                color: #fdcb6e;
+            }}
+            h2 {{ 
+                color: #2980B9; 
+                margin-top: 30px; 
+                margin-bottom: 15px; 
+                padding-bottom: 8px; 
+                border-bottom: 2px solid #ECF0F1; 
+            }}
+            table {{ 
+                border-collapse: collapse; 
+                width: 100%; 
+                margin: 15px 0; 
+                border-radius: 8px; 
+                overflow: hidden; 
+                box-shadow: 0 2px 8px rgba(0,0,0,0.1); 
+            }}
+            th {{ 
+                background: linear-gradient(135deg, #3498DB, #2980B9); 
+                color: white; 
+                font-weight: 600; 
+                padding: 12px; 
+                text-align: left; 
+            }}
+            td {{ 
+                padding: 12px; 
+                border-bottom: 1px solid #ECF0F1; 
+            }}
+            tr:nth-child(even) {{ 
+                background-color: #F8F9FA; 
+            }}
+            tr:hover {{ 
+                background-color: #E3F2FD; 
+            }}
+            ul {{ 
+                margin: 15px 0; 
+                padding-left: 0; 
+            }}
+            li {{ 
+                list-style: none; 
+                padding: 8px 0; 
+                padding-left: 25px; 
+                position: relative; 
+            }}
+            li:before {{ 
+                content: '✓'; 
+                position: absolute; 
+                left: 0; 
+                color: #27AE60; 
+                font-weight: bold; 
+            }}
+            .summary-box {{ 
+                background: linear-gradient(135deg, #74b9ff, #0984e3); 
+                color: white; 
+                padding: 20px; 
+                border-radius: 8px; 
+                margin: 20px 0; 
+            }}
+            .summary-box h3 {{ 
+                margin-top: 0; 
+                color: white; 
+            }}
+            .footer {{ 
+                margin-top: 30px; 
+                padding-top: 20px; 
+                border-top: 1px solid #ECF0F1; 
+                text-align: center; 
+                color: #7F8C8D; 
+                font-size: 12px; 
+            }}
+            .timestamp-info {{
+                background: #f8f9fa;
+                padding: 10px;
+                border-radius: 5px;
+                margin: 10px 0;
+                font-size: 12px;
+                color: #666;
+            }}
+            @media (max-width: 600px) {{
+                .metrics, .data-quality-section {{
+                    flex-direction: column;
+                    align-items: center;
+                }}
+                .metric, .quality-metric {{
+                    margin: 5px 0;
+                }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <div class="health-icon">🏥</div>
+                <h1>Health Data Analysis Report</h1>
+                <p class="subtitle">Generated on {datetime.utcnow().strftime('%B %d, %Y at %I:%M %p UTC')}</p>
+                <div class="timestamp-info">
+                    <strong>Latest analysis:</strong> {items[0].get('analysis_timestamp', 'Unknown') if items else 'Unknown'}<br>
+                    <strong>Analysis period:</strong> {len(items)} recent runs
+                </div>
+            </div>
+
+            <div class="content">
+                <!-- Data Quality Overview -->
+                <h2>📊 Data Processing Quality</h2>
+                <div class="data-quality-section">
+                    <div class="quality-metric">
+                        <span class="quality-number">{raw_count:,}</span>
+                        <span class="quality-label">Raw Records<br>Received</span>
+                    </div>
+                    <div class="quality-metric">
+                        <span class="quality-number">{valid_count:,}</span>
+                        <span class="quality-label">Valid Records<br>Processed</span>
+                    </div>
+                    <div class="quality-metric">
+                        <span class="quality-number">{rejected_count:,}</span>
+                        <span class="quality-label">Invalid/Rejected<br>Records</span>
+                    </div>
+                    <div class="quality-metric">
+                        <span class="quality-number quality-score">{data_quality_percentage}%</span>
+                        <span class="quality-label">Data Quality<br>Score</span>
+                    </div>
+                </div>
+
+                <!-- Analysis Results -->
+                <h2>📈 Analysis Results</h2>
+                <div class="metrics">
+                    <div class="metric">
+                        <span class="metric-number">{total_rows:,}</span>
+                        <span class="metric-label">Health Records<br>Analyzed</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-number">{total_anomalies:,}</span>
+                        <span class="metric-label">Anomalies<br>Detected</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-number">{len(insights)}</span>
+                        <span class="metric-label">Key<br>Insights</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-number">{len(recommendations)}</span>
+                        <span class="metric-label">Action Items<br>Recommended</span>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h2>🔍 Top Health Anomalies</h2>
+                    <div class="anomaly-table">
+                        <table>
+                            <tr>
+                                <th>Health Anomaly</th>
+                                <th style="text-align: center;">Frequency</th>
+                            </tr>
+                            {anomalies_table_rows}
+                        </table>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h2>💡 Key Health Insights</h2>
+                    <div class="insights-list">
+                        <ul>
+                            {insights_html}
+                        </ul>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h2>📋 Recommended Actions</h2>
+                    <div class="recommendations-list">
+                        <ul>
+                            {recommendations_html}
+                        </ul>
+                    </div>
+                </div>
+
+                <div class="summary-box">
+                    <h3>📊 Executive Summary</h3>
+                    <p>{executive_summary_html}</p>
+                </div>
+            </div>
+
+            <div class="footer">
+                <p><strong>Important:</strong> This report is automatically generated from your health monitoring system.<br>
+                If you have concerns about any anomalies, please consult with a healthcare professional.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+    # Send email
+    email_sent = send_email(subject, body_text, body_html)
+    
+    if email_sent:
+        # Update notification status in DynamoDB
+        table = dynamodb.Table(DDB_TABLE)
+        for item in items:
+            try:
+                table.update_item(
+                    Key={"correlation_id": item["correlation_id"], "analysis_id": item["analysis_id"]},
+                    UpdateExpression="SET notification_sent = :sent, notification_timestamp = :ts",
+                    ExpressionAttributeValues={
+                        ":sent": True,
+                        ":ts": datetime.utcnow().isoformat() + "Z"
+                    }
+                )
+            except Exception as e:
+                log("WARN", "failed_to_update_notification_status", 
+                    correlation_id=item.get("correlation_id"), error=str(e))
+
+    return {
+        "status": "success" if email_sent else "failed",
+        "total_rows": total_rows,
+        "total_anomalies": total_anomalies,
+        "raw_count": raw_count,
+        "valid_count": valid_count,
+        "rejected_count": rejected_count,
+        "data_quality_percentage": data_quality_percentage,
+        "insights_count": len(insights),
+        "recommendations_count": len(recommendations),
+        "email_sent": email_sent,
+        "report_generated": datetime.utcnow().isoformat() + "Z",
+        "latest_analysis_timestamp": items[0].get('analysis_timestamp') if items else None
+    }

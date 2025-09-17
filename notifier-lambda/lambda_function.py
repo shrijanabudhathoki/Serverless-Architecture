@@ -1,3 +1,4 @@
+# Notifier Lambda Function
 import boto3
 import os
 import json
