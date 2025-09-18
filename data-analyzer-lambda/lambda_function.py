@@ -366,9 +366,11 @@ def lambda_handler(event, context):
                 "source_key": key,
                 "analysis_key": analysis_key,
                 "row_count": len(rows),
-                "anomaly_count": len(anomalies),
-                "status": "success",
-                "summary": llm_result.get("summary", "Analysis completed")
+                "anomalies": anomalies,
+                "insights": llm_result.get("insights", []),
+                "recommendations": llm_result.get("recommendations", []),
+                "summary": llm_result.get("summary", "Analysis completed"),
+                "records_analyzed": len(rows)
             }
             send_event_to_eventbridge("Data Analysis Complete", event_detail, corr_id)
 

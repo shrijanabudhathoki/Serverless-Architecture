@@ -260,43 +260,40 @@ def lambda_handler(event, context):
     
     if "detail" in event and event.get("source") == "health.data.analyzer":
         # EventBridge event from analyzer
+        detail = event["detail"]
         correlation_id = event["detail"].get("correlation_id")
+        items = [detail]
         event_type = "eventbridge"
         log("INFO", "received_eventbridge_event", 
             correlation_id=correlation_id,
             event_source=event.get("source"),
             detail_type=event.get("detail-type"))
-    elif "correlation_id" in event:
-        # Direct invocation or manual test
-        correlation_id = event.get("correlation_id")
-        event_type = "direct"
-        log("INFO", "received_direct_event", correlation_id=correlation_id)
     else:
         # Fallback - no correlation_id provided
         event_type = "fallback"
         log("INFO", "received_fallback_event", 
             message="No correlation_id found, processing recent analyses")
     
-    if correlation_id:
-        # Process specific file only
-        items = fetch_recent_analysis(correlation_id=correlation_id, limit=1)
-        correlation_ids = [correlation_id]
-        scope_description = "Current file only"
+    # if correlation_id:
+    #     # Process specific file only
+    #     items = fetch_recent_analysis(correlation_id=correlation_id, limit=1)
+    #     correlation_ids = [correlation_id]
+    #     scope_description = "Current file only"
         
-        log("INFO", "processing_specific_correlation", 
-            correlation_id=correlation_id,
-            items_found=len(items),
-            event_type=event_type)
-    else:
-        # Process recent files (fallback for manual triggers)
-        items = fetch_recent_analysis(correlation_id=None, limit=5)
-        correlation_ids = [item.get("correlation_id") for item in items if item.get("correlation_id")]
-        scope_description = f"Last {len(correlation_ids)} processed files"
+    #     log("INFO", "processing_specific_correlation", 
+    #         correlation_id=correlation_id,
+    #         items_found=len(items),
+    #         event_type=event_type)
+    # else:
+    #     # Process recent files (fallback for manual triggers)
+    #     items = fetch_recent_analysis(correlation_id=None, limit=5)
+    #     correlation_ids = [item.get("correlation_id") for item in items if item.get("correlation_id")]
+    #     scope_description = f"Last {len(correlation_ids)} processed files"
         
-        log("INFO", "processing_recent_analyses_fallback", 
-            items_found=len(items),
-            correlation_ids_count=len(correlation_ids),
-            event_type=event_type)
+    #     log("INFO", "processing_recent_analyses_fallback", 
+    #         items_found=len(items),
+    #         correlation_ids_count=len(correlation_ids),
+    #         event_type=event_type)
 
     # Validation check
     if not items:
