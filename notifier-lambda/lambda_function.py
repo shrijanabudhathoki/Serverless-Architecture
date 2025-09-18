@@ -5,6 +5,7 @@ import json
 from datetime import datetime
 from boto3.dynamodb.conditions import Key
 import time
+from decimal import Decimal
 
 # CONFIG   
 dynamodb = boto3.resource("dynamodb")
@@ -19,18 +20,6 @@ PROCESSED_PREFIX = os.environ.get("PROCESSED_PREFIX", "processed/")
 
 # Logging   
 def log(level, message, **kwargs):
-    from decimal import Decimal
-
-    def convert(obj):
-        if isinstance(obj, Decimal):
-            # Convert integer-like Decimals to int, others to float
-            return int(obj) if obj % 1 == 0 else float(obj)
-        elif isinstance(obj, dict):
-            return {k: convert(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [convert(i) for i in obj]
-        else:
-            return obj
 
     payload = {
         "ts": datetime.utcnow().isoformat() + "Z",
@@ -40,6 +29,17 @@ def log(level, message, **kwargs):
     payload.update(kwargs)
     safe_payload = convert(payload)
     print(json.dumps(safe_payload))
+
+def convert(obj):
+    if isinstance(obj, Decimal):
+        # Convert integer-like Decimals to int, others to float
+        return int(obj) if obj % 1 == 0 else float(obj)
+    elif isinstance(obj, dict):
+        return {k: convert(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert(i) for i in obj]
+    else:
+        return obj
 
 # Helper Functions for Row Counts   
 def fetch_manifest_data(correlation_ids):
