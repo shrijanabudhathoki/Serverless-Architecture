@@ -6,7 +6,7 @@ from datetime import datetime
 from boto3.dynamodb.conditions import Key
 import time
 
-#    CONFIG   
+# CONFIG   
 dynamodb = boto3.resource("dynamodb")
 ses = boto3.client("ses")
 s3 = boto3.client("s3")
@@ -17,7 +17,7 @@ SES_RECIPIENTS = os.environ.get("SES_RECIPIENTS", "").split(",")
 BUCKET_NAME = os.environ.get("BUCKET_NAME")
 PROCESSED_PREFIX = os.environ.get("PROCESSED_PREFIX", "processed/")
 
-#    Logging   
+# Logging   
 def log(level, message, **kwargs):
     from decimal import Decimal
 
@@ -41,7 +41,7 @@ def log(level, message, **kwargs):
     safe_payload = convert(payload)
     print(json.dumps(safe_payload))
 
-#    Helper Functions for Row Counts   
+# Helper Functions for Row Counts   
 def fetch_manifest_data(correlation_ids):
     """Fetch processing statistics from manifest files stored in S3"""
     processing_stats = {
@@ -115,7 +115,7 @@ def fetch_manifest_data(correlation_ids):
     
     return processing_stats
 
-#    DynamoDB Retrieval   
+# DynamoDB Retrieval   
 def fetch_recent_analysis(correlation_id=None, limit=10):
     table = dynamodb.Table(DDB_TABLE)
     
@@ -152,7 +152,7 @@ def fetch_recent_analysis(correlation_id=None, limit=10):
     
     return items
 
-#    Helper Functions   
+# Helper Functions   
 def extract_insights_and_recommendations(items):
     """Extract insights and recommendations from the most recent DynamoDB item only"""
     if not items:
@@ -210,7 +210,7 @@ def format_executive_summary(items):
     # Only use the first one (which should be the most recent)
     return "\n".join(summaries[:1])  # Just take the most recent summary
 
-#    SES Email   
+# SES Email   
 
 def send_email(subject, body_text, body_html, retries=3, delay=2):
     if not SES_SENDER or not SES_RECIPIENTS:
@@ -243,10 +243,18 @@ def send_email(subject, body_text, body_html, retries=3, delay=2):
 
         
 
-#    Lambda Handler   
+# Lambda Handler   
 def lambda_handler(event, context):
-    correlation_id = event.get("correlation_id")  # optional filter
-    items = fetch_recent_analysis(correlation_id=correlation_id, limit=5)
+    correlation_id = event.get("correlation_id")
+    if correlation_id:
+        items = fetch_recent_analysis(correlation_id=correlation_id, limit=1)
+        correlation_ids = [correlation_id]
+    else:
+        items = fetch_recent_analysis(correlation_id=None, limit=5)
+        correlation_ids = [item.get("correlation_id") for item in items if item.get("correlation_id")]
+    
+
+    # items = fetch_recent_analysis(correlation_id=correlation_id, limit=5)
 
     if not items:
         log("INFO", "no_analysis_found", correlation_id=correlation_id)
@@ -258,7 +266,7 @@ def lambda_handler(event, context):
         oldest_timestamp=items[-1].get('analysis_timestamp') if items else None)
 
     # Get correlation IDs for fetching processing statistics
-    correlation_ids = [item.get("correlation_id") for item in items if item.get("correlation_id")]
+    # correlation_ids = [item.get("correlation_id") for item in items if item.get("correlation_id")]
     processing_stats = fetch_manifest_data(correlation_ids)
 
     # Aggregate row counts and anomalies from analysis results
