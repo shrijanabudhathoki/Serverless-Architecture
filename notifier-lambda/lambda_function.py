@@ -273,27 +273,6 @@ def lambda_handler(event, context):
         event_type = "fallback"
         log("INFO", "received_fallback_event", 
             message="No correlation_id found, processing recent analyses")
-    
-    # if correlation_id:
-    #     # Process specific file only
-    #     items = fetch_recent_analysis(correlation_id=correlation_id, limit=1)
-    #     correlation_ids = [correlation_id]
-    #     scope_description = "Current file only"
-        
-    #     log("INFO", "processing_specific_correlation", 
-    #         correlation_id=correlation_id,
-    #         items_found=len(items),
-    #         event_type=event_type)
-    # else:
-    #     # Process recent files (fallback for manual triggers)
-    #     items = fetch_recent_analysis(correlation_id=None, limit=5)
-    #     correlation_ids = [item.get("correlation_id") for item in items if item.get("correlation_id")]
-    #     scope_description = f"Last {len(correlation_ids)} processed files"
-        
-    #     log("INFO", "processing_recent_analyses_fallback", 
-    #         items_found=len(items),
-    #         correlation_ids_count=len(correlation_ids),
-    #         event_type=event_type)
 
     # Validation check
     if not items:
@@ -305,7 +284,6 @@ def lambda_handler(event, context):
     # Log processing scope
     log("INFO", "processing_recent_items", 
         item_count=len(items),
-        scope=scope_description,
         event_type=event_type,
         newest_timestamp=items[0].get('analysis_timestamp') if items else None,
         oldest_timestamp=items[-1].get('analysis_timestamp') if items else None)
@@ -335,7 +313,6 @@ def lambda_handler(event, context):
     executive_summary_html = str(executive_summary).replace("\n", "<br>")
 
     log("INFO", "email_data_prepared", 
-        scope=scope_description,
         event_type=event_type,
         total_input_rows=processing_stats["total_input"],
         total_valid_rows=processing_stats["total_valid"], 
@@ -665,7 +642,6 @@ If you have concerns about any anomalies, please consult with a healthcare profe
     return {
         "status": "success" if email_sent else "failed",
         "event_type": event_type,
-        "scope": scope_description,
         "processing_stats": processing_stats,
         "total_analyzed_rows": total_analyzed_rows,
         "total_anomalies": total_anomalies,
