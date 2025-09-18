@@ -4,7 +4,8 @@
 ## [CICD Github Repo Link](https://github.com/shrijanabudhathoki/CICD)
 
 ## High Level Architecture Diagram
-![Architecture Diagram](screenshots/image.png)
+![Architecture Diagram](screenshots/serverlessarchi.png)
+
 ## Introduction:
 
 ### Serverless Architecture:
