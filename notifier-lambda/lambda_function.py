@@ -260,10 +260,11 @@ def lambda_handler(event, context):
     
     if "detail" in event and event.get("source") == "health.data.analyzer":
         # EventBridge event from analyzer
-        detail = event["detail"]
         correlation_id = event["detail"].get("correlation_id")
+        detail = event["detail"]
         items = [detail]
         event_type = "eventbridge"
+        correlation_ids = [correlation_id] if correlation_id else []
         log("INFO", "received_eventbridge_event", 
             correlation_id=correlation_id,
             event_source=event.get("source"),
