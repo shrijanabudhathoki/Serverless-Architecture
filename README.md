@@ -1,6 +1,10 @@
 # Serverless Architecture: Data Processing and Analysis
 
-## [Github Repo Link](https://github.com/shrijanabudhathoki/Serverless-Architecture) 
+## [Serveless Architecture Github Repo Link](https://github.com/shrijanabudhathoki/Serverless-Architecture) 
+## [CICD Github Repo Link](https://github.com/shrijanabudhathoki/CICD)
+
+## High Level Architecture Diagram
+![Architecture Diagram](screenshots/serverlessarchi.drawio.png)
 
 ## Introduction:
 
@@ -25,7 +29,7 @@ This project implements a data processing pipeline on AWS that demonstrates prac
 ### Basic Flow:
 1. **Ingestion:** Data is ingested into S3 bucket.
 2. **Processing:** Raw data from S3 bucket is cleaned, validated and split into processed and rejected folders.
-3. **Orchestration:** The workflow is coordinated between using Eventbridge.
+3. **Orchestration:** The workflow is coordinated using Eventbridge.
 4. **Analysis:** Amazon Bedrock perform analysis in processed data.
 5. **Storage:** The analyzed data is stored on DynamoDB.
 6. **Notification:** The data from DynamoDB is sent through SES emails.
@@ -37,22 +41,38 @@ This project implements a data processing pipeline on AWS that demonstrates prac
     ```
     aws configure
     ```
-- IAM permissions following Principle of Least Priviledge
-    - Lambda, CodeBuild, CodePipeline
 - Install required dependencies: python, boto, terraform
+- Valid SES email addresses
 
-### Terraform deployment for CodeBuild and CodePipeline:
+### Step-by-step Guide
+- Clone a reposiory
 ```
+git clone https://github.com/shrijanabudhathoki/Serverless-Architecture.git
+cd Serverless Architecture
+```
+- Configure AWS provider
+```
+aws configure
+```
+- Initialize Terraform
+```
+cd terraform
 terraform init
 terraform plan
 terraform apply
 ```
+- Check your email for SES verification and click the verification link to enable email sending.
+- Upload sample data to s3 bucket to test the pipeline
+```
+aws s3 cp sample_data.csv s3://health-data-bucket-shrijana/raw/
+```
+- Upload same file twice to check for idempotency.
 
-### AWS resources:
+### CodePipeline and CodeBuild
 - The required aws resources are provisioned when we push code changes to github repository.
 - Any changes to github repository triggers code pipeline which automatically deploys the resources required for serverless data processing pipeline.
 
-### Purpose of each lambda functions:
+### Components details
 #### Data ingestor lambda function:
 - Data ingestor lambda function is s3 based data ingestion pipeline that ingests CSV health data, validates them and sends processed results to S3 bucket and Eventbridge.
 - Lambda is triggered when we upload csv file to s3 bucket in raw/ folder.
@@ -77,17 +97,44 @@ terraform apply
 - It sends the email via Amazon SES.
 
 ### Role of Eventbridge:
-Eventbridge orchestrates the workflow. In a pipeline, after one Lambda finishes its task (e.g., data-ingestor or data-analyzer), it sends an event to EventBridge. EventBridge then triggers downstream Lambdas (e.g., notifier) based on the event type or content. our Lambda sends an EventBridge event with details like status: success or status: failed. EventBridge routes these events to the appropriate Lambda (or another consumer). This allows the system to react differently to success vs failure.
+Eventbridge orchestrates the workflow. In a pipeline, after one Lambda finishes its task (e.g., data-ingestor or data-analyzer), it sends an event to EventBridge. EventBridge then triggers downstream Lambdas (e.g., notifier) based on the event type or content. The Lambda sends an EventBridge event with details like status: success or status: failed. EventBridge routes these events to the appropriate Lambda (or another consumer). This allows the system to react differently to success vs failure.
 
 ### Security Measures:
-- IAM Roles: Least Priviledge Lambda execution roles for S3, DynamoDB, SES and Bedrock access.
-- S3 encryption: The bucket is encrypted.
+Each lambda has minimal required permissions following principle of least privilege. For eg. notifier lambda is only allowed to get dynamodb data, create logs and get s3 bucket data. S3 bucket are encrypted using server side encryption which ensures data security.
 
 ### Error Handling & Retry Strategies
 - Lambda functions log structured JSON messages for success and error events.
-- Idempotency marker prevents re-analysis; Bedrock or DynamoDB errors logged and retried.
+- Idempotency marker prevents re-analysis; Bedrock or DynamoDB errors logged.
+- Retry mechanism for sending email.
+- Metrics alarm are used for alert through email in case of lambda failures.
+
+### CICD Pipeline
+- CodeBuild and CodePipeline is used for CICD
+- CI step fmt, init and validate terraform. It also performs validation testing.
+- CD step apply the terraform.
+
+### Github Backsync
+We have three branch: main, dev, uat. When we push changes to uat branch, dev is out of sync. Backsync creates pr to dev to sync uat and dev branch.
+
+
 
 ### Cost Analysis of Bedrock Model
 - The model used  for LLM analysis is nova-lite the price of which is $0.00006 per 1000 input tokens.
+![Cost Analysis](<screenshots/Screenshot from 2025-09-17 20-11-06.png>)
 
-###
+### DynamoDB populated with data
+![DynamoDB Result](<screenshots/Screenshot from 2025-09-17 18-30-45.png>)
+![DynamoDB Result](<screenshots/Screenshot from 2025-09-17 18-30-28.png>)
+![DynamoDB Result](<screenshots/Screenshot from 2025-09-17 18-30-49.png>)
+![DynamoDB Result](<screenshots/Screenshot from 2025-09-17 18-30-52.png>)
+
+### S3 bucket with raw/, processed/ and rejected/ data
+![S3 bucket](<screenshots/Screenshot from 2025-09-17 18-27-58.png>)
+
+### Alarm firing on failure
+![Alarm](<screenshots/Screenshot from 2025-09-17 18-27-47.png>)
+
+### Mail with analysis summary
+![Email](<screenshots/Screenshot from 2025-09-17 18-27-20.png>)
+![Email](<screenshots/Screenshot from 2025-09-17 18-27-27.png>)
+![Email](<screenshots/Screenshot from 2025-09-17 18-27-33.png>)
