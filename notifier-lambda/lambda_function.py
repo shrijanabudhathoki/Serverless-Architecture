@@ -541,10 +541,6 @@ If you have concerns about any anomalies, please consult with a healthcare profe
                 <div class="health-icon">🏥</div>
                 <h1>Health Data Analysis Report</h1>
                 <p class="subtitle">Generated on {datetime.utcnow().strftime('%B %d, %Y at %I:%M %p UTC')}</p>
-                <div class="timestamp-info">
-                    <strong>Latest analysis:</strong> {items[0].get('analysis_timestamp', 'Unknown') if items else 'Unknown'}<br>
-                    <strong>Analysis period:</strong> {len(items)} recent runs
-                </div>
             </div>
 
             <div class="content">
