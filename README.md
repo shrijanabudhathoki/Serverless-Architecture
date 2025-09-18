@@ -132,6 +132,9 @@ We have three branch: main, dev, uat. When we push changes to uat branch, dev is
 - The model used  for LLM analysis is nova-lite the price of which is $0.00006 per 1000 input tokens.
 ![Cost Analysis](<screenshots/Screenshot from 2025-09-17 20-11-06.png>)
 
+### Code Pipeline
+![alt text](<screenshots/image copy.png>)
+
 ### DynamoDB populated with data
 ![DynamoDB Result](<screenshots/Screenshot from 2025-09-17 18-30-45.png>)
 ![DynamoDB Result](<screenshots/Screenshot from 2025-09-17 18-30-28.png>)
