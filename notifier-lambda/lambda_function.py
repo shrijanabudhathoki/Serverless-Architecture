@@ -245,28 +245,75 @@ def send_email(subject, body_text, body_html, retries=3, delay=2):
 
 # Lambda Handler   
 def lambda_handler(event, context):
-    correlation_id = event.get("correlation_id")
+    """
+    Updated handler to properly handle EventBridge events from the analyzer
+    """
+    
+    # DEBUG: Log the incoming event structure
+    log("DEBUG", "notifier_event_received", 
+        event_keys=list(event.keys()),
+        event_source=event.get("source"),
+        detail_type=event.get("detail-type"))
+    
+    # Handle EventBridge event format from analyzer
+    correlation_id = None
+    
+    if "detail" in event and event.get("source") == "health.data.analyzer":
+        # EventBridge event from analyzer
+        correlation_id = event["detail"].get("correlation_id")
+        event_type = "eventbridge"
+        log("INFO", "received_eventbridge_event", 
+            correlation_id=correlation_id,
+            event_source=event.get("source"),
+            detail_type=event.get("detail-type"))
+    elif "correlation_id" in event:
+        # Direct invocation or manual test
+        correlation_id = event.get("correlation_id")
+        event_type = "direct"
+        log("INFO", "received_direct_event", correlation_id=correlation_id)
+    else:
+        # Fallback - no correlation_id provided
+        event_type = "fallback"
+        log("INFO", "received_fallback_event", 
+            message="No correlation_id found, processing recent analyses")
+    
     if correlation_id:
+        # Process specific file only
         items = fetch_recent_analysis(correlation_id=correlation_id, limit=1)
         correlation_ids = [correlation_id]
+        scope_description = "Current file only"
+        
+        log("INFO", "processing_specific_correlation", 
+            correlation_id=correlation_id,
+            items_found=len(items),
+            event_type=event_type)
     else:
+        # Process recent files (fallback for manual triggers)
         items = fetch_recent_analysis(correlation_id=None, limit=5)
         correlation_ids = [item.get("correlation_id") for item in items if item.get("correlation_id")]
-    
+        scope_description = f"Last {len(correlation_ids)} processed files"
+        
+        log("INFO", "processing_recent_analyses_fallback", 
+            items_found=len(items),
+            correlation_ids_count=len(correlation_ids),
+            event_type=event_type)
 
-    # items = fetch_recent_analysis(correlation_id=correlation_id, limit=5)
-
+    # Validation check
     if not items:
-        log("INFO", "no_analysis_found", correlation_id=correlation_id)
+        log("INFO", "no_analysis_found", 
+            correlation_id=correlation_id,
+            event_type=event_type)
         return {"status": "no_data", "message": "No analysis data found"}
 
+    # Log processing scope
     log("INFO", "processing_recent_items", 
         item_count=len(items),
+        scope=scope_description,
+        event_type=event_type,
         newest_timestamp=items[0].get('analysis_timestamp') if items else None,
         oldest_timestamp=items[-1].get('analysis_timestamp') if items else None)
 
     # Get correlation IDs for fetching processing statistics
-    # correlation_ids = [item.get("correlation_id") for item in items if item.get("correlation_id")]
     processing_stats = fetch_manifest_data(correlation_ids)
 
     # Aggregate row counts and anomalies from analysis results
@@ -291,6 +338,8 @@ def lambda_handler(event, context):
     executive_summary_html = str(executive_summary).replace("\n", "<br>")
 
     log("INFO", "email_data_prepared", 
+        scope=scope_description,
+        event_type=event_type,
         total_input_rows=processing_stats["total_input"],
         total_valid_rows=processing_stats["total_valid"], 
         total_rejected_rows=processing_stats["total_rejected"],
@@ -300,12 +349,12 @@ def lambda_handler(event, context):
         recommendations_count=len(recommendations),
         anomaly_types=len(sorted_anomalies))
 
-    # Email content
-    subject = f"Health Data Analysis Report - {datetime.utcnow().strftime('%B %d, %Y')}"
+    # Email content - updated subject to indicate scope
+    subject = f"Health Data Analysis Report - {scope_description} - {datetime.utcnow().strftime('%B %d, %Y')}"
     
     # Calculate data quality percentage
     data_quality_pct = (processing_stats["total_valid"] / processing_stats["total_input"] * 100) if processing_stats["total_input"] > 0 else 100
-    
+
     # Format content for email
     anomalies_text = "\n".join([f"  • {anomaly}: {count} occurrences" for anomaly, count in sorted_anomalies[:10]]) or "  • No anomalies detected"
     insights_text = "\n".join([f"  • {insight}" for insight in insights[:10]]) or "  • Continuing to monitor health patterns"
@@ -313,10 +362,11 @@ def lambda_handler(event, context):
 
     body_text = f"""Health Data Analysis Report
 Generated on: {datetime.utcnow().strftime('%B %d, %Y at %I:%M %p UTC')}
-Based on analysis from: {items[0].get('analysis_timestamp', 'Unknown') if items else 'Unknown'}
+Scope: {scope_description}
+Event Type: {event_type.title()}
 
 === DATA PROCESSING OVERVIEW ===
-Total Raw Records: {processing_stats['total_input']:,}
+Total Raw Records (this scope): {processing_stats['total_input']:,}
 Valid Records: {processing_stats['total_valid']:,}
 Rejected Records: {processing_stats['total_rejected']:,}
 
@@ -612,10 +662,14 @@ If you have concerns about any anomalies, please consult with a healthcare profe
                 )
             except Exception as e:
                 log("WARN", "failed_to_update_notification_status", 
-                    correlation_id=item.get("correlation_id"), error=str(e))
+                    correlation_id=item.get("correlation_id"), 
+                    analysis_id=item.get("analysis_id"),
+                    error=str(e))
 
     return {
         "status": "success" if email_sent else "failed",
+        "event_type": event_type,
+        "scope": scope_description,
         "processing_stats": processing_stats,
         "total_analyzed_rows": total_analyzed_rows,
         "total_anomalies": total_anomalies,

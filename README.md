@@ -116,8 +116,6 @@ Each lambda has minimal required permissions following principle of least privil
 ### Github Backsync
 We have three branch: main, dev, uat. When we push changes to uat branch, dev is out of sync. Backsync creates pr to dev to sync uat and dev branch.
 
-
-
 ### Cost Analysis of Bedrock Model
 - The model used  for LLM analysis is nova-lite the price of which is $0.00006 per 1000 input tokens.
 ![Cost Analysis](<screenshots/Screenshot from 2025-09-17 20-11-06.png>)
