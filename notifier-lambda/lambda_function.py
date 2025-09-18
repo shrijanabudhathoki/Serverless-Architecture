@@ -653,7 +653,7 @@ If you have concerns about any anomalies, please consult with a healthcare profe
         for item in items:
             try:
                 table.update_item(
-                    Key={"correlation_id": item["correlation_id"], "analysis_id": item["analysis_id"]},
+                    Key={"correlation_id": item["correlation_id"], "analysis_timestamp": item["analysis_timestamp"]},
                     UpdateExpression="SET notification_sent = :sent, notification_timestamp = :ts",
                     ExpressionAttributeValues={
                         ":sent": True,
