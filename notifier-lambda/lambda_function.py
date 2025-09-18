@@ -350,7 +350,7 @@ def lambda_handler(event, context):
         anomaly_types=len(sorted_anomalies))
 
     # Email content - updated subject to indicate scope
-    subject = f"Health Data Analysis Report - {scope_description} - {datetime.utcnow().strftime('%B %d, %Y')}"
+    subject = f"Health Data Analysis Report - {datetime.utcnow().strftime('%B %d, %Y')}"
     
     # Calculate data quality percentage
     data_quality_pct = (processing_stats["total_valid"] / processing_stats["total_input"] * 100) if processing_stats["total_input"] > 0 else 100
@@ -362,7 +362,6 @@ def lambda_handler(event, context):
 
     body_text = f"""Health Data Analysis Report
 Generated on: {datetime.utcnow().strftime('%B %d, %Y at %I:%M %p UTC')}
-Scope: {scope_description}
 Event Type: {event_type.title()}
 
 === DATA PROCESSING OVERVIEW ===
