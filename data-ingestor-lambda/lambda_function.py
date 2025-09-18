@@ -138,15 +138,11 @@ def lambda_handler(event, context):
     Ensures idempotency by file version and content hash.
     """
 
-    # Determine if event is S3 notification or manual format
-    if "Records" in event:
-        records = event["Records"]
-    elif "bucket" in event and "key" in event:
-        records = [{"s3": {"bucket": {"name": event["bucket"]}, 
-                           "object": {"key": event["key"], "versionId": event.get("versionId", "null")}}}]
-    else:
+    if "Records" not in event:
         log("ERROR", "invalid_event_format", event=event)
         return {"status": "failed", "reason": "invalid_event_format"}
+
+    records = event["Records"]
 
     results = []
 
