@@ -74,6 +74,7 @@ resource "aws_lambda_function" "notifier_lambda" {
   environment {
     variables = {
       DDB_TABLE          = aws_dynamodb_table.analysis_table.name
+      BUCKET_NAME        = var.bucket_name
       SES_SENDER         = var.email_sender
       SES_RECIPIENTS     = var.email_recipients
       BEDROCK_MODEL_ID   = var.bedrock_model_id

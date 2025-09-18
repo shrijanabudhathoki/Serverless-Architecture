@@ -1,0 +1,16 @@
+version: 0.2
+phases:
+  install:
+    commands:
+      - echo "Installing Terraform..."
+      - curl -fsSL https://releases.hashicorp.com/terraform/1.13.1/terraform_1.13.1_linux_amd64.zip -o terraform.zip
+      - unzip -o terraform.zip -d /tmp/terraform_install
+      - mv /tmp/terraform_install/terraform /usr/local/bin/
+      - terraform -version
+      - rm -rf terraform.zip /tmp/terraform_install
+  build:
+    commands:
+      - echo "Initializing Terraform..."
+      - cd terraform
+      - terraform init -input=false
+      - terraform apply -auto-approve

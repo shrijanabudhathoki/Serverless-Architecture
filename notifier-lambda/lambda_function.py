@@ -1,19 +1,23 @@
+# Notifier Lambda Function
 import boto3
 import os
 import json
 from datetime import datetime
-from decimal import Decimal
 from boto3.dynamodb.conditions import Key
+import time
 
-# -------- CONFIG --------
+#    CONFIG   
 dynamodb = boto3.resource("dynamodb")
 ses = boto3.client("ses")
+s3 = boto3.client("s3")
 
 DDB_TABLE = os.environ.get("DDB_TABLE", "health_analysis")
 SES_SENDER = os.environ.get("SES_SENDER")
 SES_RECIPIENTS = os.environ.get("SES_RECIPIENTS", "").split(",")
+BUCKET_NAME = os.environ.get("BUCKET_NAME")
+PROCESSED_PREFIX = os.environ.get("PROCESSED_PREFIX", "processed/")
 
-# -------- Logging --------
+#    Logging   
 def log(level, message, **kwargs):
     from decimal import Decimal
 
@@ -37,7 +41,81 @@ def log(level, message, **kwargs):
     safe_payload = convert(payload)
     print(json.dumps(safe_payload))
 
-# -------- DynamoDB Retrieval --------
+#    Helper Functions for Row Counts   
+def fetch_manifest_data(correlation_ids):
+    """Fetch processing statistics from manifest files stored in S3"""
+    processing_stats = {
+        "total_input": 0,
+        "total_valid": 0, 
+        "total_rejected": 0,
+        "files_processed": 0,
+        "manifests_found": []
+    }
+    
+    if not BUCKET_NAME:
+        log("WARN", "bucket_name_not_configured", 
+            note="Set BUCKET_NAME environment variable to enable processing statistics")
+        return processing_stats
+    
+    for correlation_id in correlation_ids:
+        try:
+            # Extract original filename from correlation_id format: bucket/key@version
+            if "/" in correlation_id and "@" in correlation_id:
+                # Parse correlation_id: health-data-bucket-shrijana/raw/health_4a87f4fd83b34de5912885e0e7536c6a.csv@nrJlEYaQQCfBYFinSvQPG9bX7apq9mAJ
+                parts = correlation_id.split("/")
+                if len(parts) >= 3:  # bucket/prefix/filename@version
+                    filename_with_version = parts[-1]  # health_4a87f4fd83b34de5912885e0e7536c6a.csv@nrJlEYaQQCfBYFinSvQPG9bX7apq9mAJ
+                    base_name = filename_with_version.split("@")[0]  # health_4a87f4fd83b34de5912885e0e7536c6a.csv
+                    manifest_key = f"{PROCESSED_PREFIX}{base_name.replace('.csv','')}_manifest.json"
+                
+                try:
+                    obj = s3.get_object(Bucket=BUCKET_NAME, Key=manifest_key)
+                    manifest_content = obj["Body"].read().decode("utf-8")
+                    manifest = json.loads(manifest_content)
+                    
+                    counts = manifest.get("counts", {})
+                    processing_stats["total_input"] += counts.get("input", 0)
+                    processing_stats["total_valid"] += counts.get("valid", 0)
+                    processing_stats["total_rejected"] += counts.get("rejected", 0)
+                    processing_stats["files_processed"] += 1
+                    processing_stats["manifests_found"].append({
+                        "correlation_id": correlation_id,
+                        "manifest_key": manifest_key,
+                        "counts": counts
+                    })
+                    
+                    log("INFO", "manifest_processed", 
+                        correlation_id=correlation_id,
+                        input_rows=counts.get("input", 0),
+                        valid_rows=counts.get("valid", 0),
+                        rejected_rows=counts.get("rejected", 0))
+                        
+                except s3.exceptions.NoSuchKey:
+                    log("WARN", "manifest_not_found", 
+                        correlation_id=correlation_id,
+                        manifest_key=manifest_key)
+                except Exception as e:
+                    log("ERROR", "manifest_fetch_failed", 
+                        correlation_id=correlation_id,
+                        manifest_key=manifest_key,
+                        error=str(e))
+            else:
+                log("WARN", "invalid_correlation_id_format", correlation_id=correlation_id)
+                
+        except Exception as e:
+            log("ERROR", "processing_correlation_id_failed", 
+                correlation_id=correlation_id, 
+                error=str(e))
+    
+    log("INFO", "processing_stats_aggregated", 
+        total_input=processing_stats["total_input"],
+        total_valid=processing_stats["total_valid"],
+        total_rejected=processing_stats["total_rejected"],
+        files_processed=processing_stats["files_processed"])
+    
+    return processing_stats
+
+#    DynamoDB Retrieval   
 def fetch_recent_analysis(correlation_id=None, limit=10):
     table = dynamodb.Table(DDB_TABLE)
     
@@ -74,41 +152,7 @@ def fetch_recent_analysis(correlation_id=None, limit=10):
     
     return items
 
-# Alternative function using GSI (if you implement Option 1)
-def fetch_recent_analysis_with_gsi(correlation_id=None, limit=10):
-    table = dynamodb.Table(DDB_TABLE)
-    
-    if correlation_id:
-        # Query specific correlation_id
-        response = table.query(
-            KeyConditionExpression=Key('correlation_id').eq(correlation_id),
-            ScanIndexForward=False,
-            Limit=limit
-        )
-        items = response.get("Items", [])
-    else:
-        # Use GSI to get items sorted by timestamp
-        response = table.scan(
-            IndexName='TimestampIndex',
-            Limit=limit * 3  # Get more items since we'll sort them
-        )
-        all_items = response.get("Items", [])
-        
-        # Sort by timestamp (newest first)
-        items = sorted(
-            all_items,
-            key=lambda x: x.get('analysis_timestamp', ''),
-            reverse=True
-        )[:limit]
-    
-    log("INFO", "fetched_items_with_gsi", 
-        count=len(items),
-        correlation_id=correlation_id,
-        latest_timestamp=items[0].get('analysis_timestamp') if items else None)
-    
-    return items
-
-# -------- Helper Functions --------
+#    Helper Functions   
 def extract_insights_and_recommendations(items):
     """Extract insights and recommendations from the most recent DynamoDB item only"""
     if not items:
@@ -117,21 +161,11 @@ def extract_insights_and_recommendations(items):
     # Only use the most recent item (first item after sorting)
     most_recent_item = items[0]
     
-    log("DEBUG", "processing_most_recent_item", 
-        correlation_id=most_recent_item.get("correlation_id", "unknown"),
-        timestamp=most_recent_item.get("analysis_timestamp", "unknown"),
-        has_insights=bool(most_recent_item.get("insights")),
-        has_recommendations=bool(most_recent_item.get("recommendations")))
-    
     # Extract insights from most recent analysis only
     insights = most_recent_item.get("insights", [])
-    if not (insights and isinstance(insights, list) and insights != ["No major trends observed"]):
-        insights = []
     
     # Extract recommendations from most recent analysis only
     recommendations = most_recent_item.get("recommendations", [])
-    if not (recommendations and isinstance(recommendations, list) and recommendations != ["No recommendations"]):
-        recommendations = []
     
     log("INFO", "extracted_data_from_latest", 
         insights_count=len(insights), 
@@ -176,31 +210,40 @@ def format_executive_summary(items):
     # Only use the first one (which should be the most recent)
     return "\n".join(summaries[:1])  # Just take the most recent summary
 
-# -------- SES Email --------
-def send_email(subject, body_text, body_html):
+#    SES Email   
+
+def send_email(subject, body_text, body_html, retries=3, delay=2):
     if not SES_SENDER or not SES_RECIPIENTS:
         log("ERROR", "SES_not_configured")
         return False
 
-    try:
-        ses.send_email(
-            Source=SES_SENDER,
-            Destination={"ToAddresses": [r.strip() for r in SES_RECIPIENTS if r.strip()]},
-            Message={
-                "Subject": {"Data": subject, "Charset": "UTF-8"},
-                "Body": {
-                    "Text": {"Data": body_text, "Charset": "UTF-8"},
-                    "Html": {"Data": body_html, "Charset": "UTF-8"},
-                },
-            }
-        )
-        log("INFO", "email_sent", subject=subject, recipients=len(SES_RECIPIENTS))
-        return True
-    except Exception as e:
-        log("ERROR", "email_failed", error=str(e))
-        return False
+    recipients = [r.strip() for r in SES_RECIPIENTS if r.strip()]
 
-# -------- Lambda Handler --------
+    for attempt in range(retries):
+        try:
+            ses.send_email(
+                Source=SES_SENDER,
+                Destination={"ToAddresses": recipients},
+                Message={
+                    "Subject": {"Data": subject, "Charset": "UTF-8"},
+                    "Body": {
+                        "Text": {"Data": body_text, "Charset": "UTF-8"},
+                        "Html": {"Data": body_html, "Charset": "UTF-8"},
+                    },
+                }
+            )
+            log("INFO", "email_sent", subject=subject, recipients=len(recipients))
+            return True
+        except Exception as e:
+            log("ERROR", "email_failed", error=str(e), attempt=attempt + 1)
+            if attempt < retries - 1:
+                time.sleep(delay * (2 ** attempt))  # exponential backoff
+            else:
+                return False
+
+        
+
+#    Lambda Handler   
 def lambda_handler(event, context):
     correlation_id = event.get("correlation_id")  # optional filter
     items = fetch_recent_analysis(correlation_id=correlation_id, limit=5)
@@ -214,8 +257,12 @@ def lambda_handler(event, context):
         newest_timestamp=items[0].get('analysis_timestamp') if items else None,
         oldest_timestamp=items[-1].get('analysis_timestamp') if items else None)
 
-    # Aggregate row counts and anomalies
-    total_rows = sum(item.get("records_analyzed", 0) for item in items)
+    # Get correlation IDs for fetching processing statistics
+    correlation_ids = [item.get("correlation_id") for item in items if item.get("correlation_id")]
+    processing_stats = fetch_manifest_data(correlation_ids)
+
+    # Aggregate row counts and anomalies from analysis results
+    total_analyzed_rows = sum(item.get("records_analyzed", 0) for item in items)
     total_anomalies = sum(len(item.get("anomalies", [])) for item in items)
 
     # Build anomaly frequency
@@ -236,7 +283,10 @@ def lambda_handler(event, context):
     executive_summary_html = str(executive_summary).replace("\n", "<br>")
 
     log("INFO", "email_data_prepared", 
-        total_rows=total_rows, 
+        total_input_rows=processing_stats["total_input"],
+        total_valid_rows=processing_stats["total_valid"], 
+        total_rejected_rows=processing_stats["total_rejected"],
+        total_analyzed_rows=total_analyzed_rows,
         total_anomalies=total_anomalies,
         insights_count=len(insights),
         recommendations_count=len(recommendations),
@@ -244,6 +294,9 @@ def lambda_handler(event, context):
 
     # Email content
     subject = f"Health Data Analysis Report - {datetime.utcnow().strftime('%B %d, %Y')}"
+    
+    # Calculate data quality percentage
+    data_quality_pct = (processing_stats["total_valid"] / processing_stats["total_input"] * 100) if processing_stats["total_input"] > 0 else 100
     
     # Format content for email
     anomalies_text = "\n".join([f"  • {anomaly}: {count} occurrences" for anomaly, count in sorted_anomalies[:10]]) or "  • No anomalies detected"
@@ -254,10 +307,14 @@ def lambda_handler(event, context):
 Generated on: {datetime.utcnow().strftime('%B %d, %Y at %I:%M %p UTC')}
 Based on analysis from: {items[0].get('analysis_timestamp', 'Unknown') if items else 'Unknown'}
 
-=== OVERVIEW ===
-Total Health Records Processed: {total_rows:,}
+=== DATA PROCESSING OVERVIEW ===
+Total Raw Records: {processing_stats['total_input']:,}
+Valid Records: {processing_stats['total_valid']:,}
+Rejected Records: {processing_stats['total_rejected']:,}
+
+=== ANALYSIS OVERVIEW ===
+Records Analyzed: {total_analyzed_rows:,}
 Total Anomalies Detected: {total_anomalies:,}
-Analysis Period: {len(items)} recent analysis runs
 
 === TOP HEALTH ANOMALIES ===
 {anomalies_text}
@@ -285,8 +342,8 @@ If you have concerns about any anomalies, please consult with a healthcare profe
     
     recommendations_html = "".join([f"<li>{rec}</li>" for rec in recommendations[:10]]) or "<li style='color: #7F8C8D;'>Continue regular health monitoring</li>"
 
-    # Format executive summary for HTML (preserve line breaks)
-    executive_summary_html = executive_summary.replace('\n', '<br>')
+    # Determine quality status color
+    quality_color = "#27AE60" if data_quality_pct >= 95 else "#F39C12" if data_quality_pct >= 85 else "#E74C3C"
 
     body_html = f"""
     <!DOCTYPE html>
@@ -334,19 +391,39 @@ If you have concerns about any anomalies, please consult with a healthcare profe
                 background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
                 border-radius: 8px; 
                 color: white; 
+                flex-wrap: wrap;
             }}
             .metric {{ 
                 text-align: center; 
-                margin: 0 15px
+                margin: 10px 15px;
+                min-width: 100px;
             }}
             .metric-number {{ 
-                font-size: 32px; 
+                font-size: 24px; 
                 font-weight: bold; 
                 display: block; 
             }}
             .metric-label {{ 
-                font-size: 12px; 
+                font-size: 11px; 
                 opacity: 0.9; 
+            }}
+            .data-quality-section {{
+                background: linear-gradient(135deg, #a8e6cf 0%, #7fcdcd 100%);
+                padding: 20px;
+                border-radius: 8px;
+                margin: 20px 0;
+                color: #2c3e50;
+            }}
+            .quality-metric {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin: 8px 0;
+            }}
+            .quality-percentage {{
+                font-size: 24px;
+                font-weight: bold;
+                color: {quality_color};
             }}
             h2 {{ 
                 color: #2980B9; 
@@ -439,10 +516,23 @@ If you have concerns about any anomalies, please consult with a healthcare profe
             </div>
 
             <div class="content">
+                <div class="data-quality-section">
+                    <h3 style="margin-top: 0; color: #2c3e50;">📊 Data Processing Summary</h3>
+                    <div class="quality-metric">
+                        <span><strong>Raw Records:</strong> {processing_stats['total_input']:,}</span>
+                    </div>
+                    <div class="quality-metric">
+                        <span><strong>Valid Records:</strong> {processing_stats['total_valid']:,}</span>
+                    </div>
+                    <div class="quality-metric">
+                        <span><strong>Rejected Records:</strong> {processing_stats['total_rejected']:,}</span>
+                    </div>
+                </div>
+
                 <div class="metrics">
                     <div class="metric">
-                        <span class="metric-number">{total_rows:,}</span>
-                        <span class="metric-label">Records Processed</span>
+                        <span class="metric-number">{total_analyzed_rows:,}</span>
+                        <span class="metric-label">Records Analyzed</span>
                     </div>
                     <div class="metric">
                         <span class="metric-number">{total_anomalies:,}</span>
@@ -518,10 +608,9 @@ If you have concerns about any anomalies, please consult with a healthcare profe
 
     return {
         "status": "success" if email_sent else "failed",
-        "total_rows": total_rows,
+        "processing_stats": processing_stats,
+        "total_analyzed_rows": total_analyzed_rows,
         "total_anomalies": total_anomalies,
-        "insights_count": len(insights),
-        "recommendations_count": len(recommendations),
         "email_sent": email_sent,
         "report_generated": datetime.utcnow().isoformat() + "Z",
         "latest_analysis_timestamp": items[0].get('analysis_timestamp') if items else None
