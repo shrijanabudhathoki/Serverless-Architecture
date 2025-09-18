@@ -4,8 +4,7 @@
 ## [CICD Github Repo Link](https://github.com/shrijanabudhathoki/CICD)
 
 ## High Level Architecture Diagram
-![Architecture Diagram](screenshots/serverlessarchi.drawio.png)
-
+![Architecture Diagram](screenshots/image.png)
 ## Introduction:
 
 ### Serverless Architecture:
@@ -69,8 +68,21 @@ aws s3 cp sample_data.csv s3://health-data-bucket-shrijana/raw/
 - Upload same file twice to check for idempotency.
 
 ### CodePipeline and CodeBuild
-- The required aws resources are provisioned when we push code changes to github repository.
+- To create codepipeline and codebuild, clone a repository:
+```
+git clone https://github.com/shrijanabudhathoki/CICD.git
+cd cicd
+```
+- Terraform init
+```
+terraform init
+terraform plan
+terraform apply
+```
+- Navigate to connections in aws console and update the connection from `pending` to `available`
+- The required aws serverless architecture resources are provisioned when we push code changes to github repository.
 - Any changes to github repository triggers code pipeline which automatically deploys the resources required for serverless data processing pipeline.
+
 
 ### Components details
 #### Data ingestor lambda function:
@@ -100,7 +112,7 @@ aws s3 cp sample_data.csv s3://health-data-bucket-shrijana/raw/
 Eventbridge orchestrates the workflow. In a pipeline, after one Lambda finishes its task (e.g., data-ingestor or data-analyzer), it sends an event to EventBridge. EventBridge then triggers downstream Lambdas (e.g., notifier) based on the event type or content. The Lambda sends an EventBridge event with details like status: success or status: failed. EventBridge routes these events to the appropriate Lambda (or another consumer). This allows the system to react differently to success vs failure.
 
 ### Security Measures:
-Each lambda has minimal required permissions following principle of least privilege. For eg. notifier lambda is only allowed to get dynamodb data, create logs and get s3 bucket data. S3 bucket are encrypted using server side encryption which ensures data security.
+Each lambda has minimal required permissions following principle of least privilege. For eg. notifier lambda is only allowed to get dynamodb data, create logs and get s3 bucket data. S3 bucket are encrypted using server side encryption which ensures data security. The lifecycle policy in S3 bucket ensures the data is retained for some amount of time.
 
 ### Error Handling & Retry Strategies
 - Lambda functions log structured JSON messages for success and error events.
