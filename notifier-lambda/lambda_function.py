@@ -6,7 +6,7 @@ from datetime import datetime
 from boto3.dynamodb.conditions import Key
 import time
 
-#    CONFIG   
+# CONFIG   
 dynamodb = boto3.resource("dynamodb")
 ses = boto3.client("ses")
 s3 = boto3.client("s3")
@@ -17,7 +17,7 @@ SES_RECIPIENTS = os.environ.get("SES_RECIPIENTS", "").split(",")
 BUCKET_NAME = os.environ.get("BUCKET_NAME")
 PROCESSED_PREFIX = os.environ.get("PROCESSED_PREFIX", "processed/")
 
-#    Logging   
+# Logging   
 def log(level, message, **kwargs):
     from decimal import Decimal
 
@@ -41,7 +41,7 @@ def log(level, message, **kwargs):
     safe_payload = convert(payload)
     print(json.dumps(safe_payload))
 
-#    Helper Functions for Row Counts   
+# Helper Functions for Row Counts   
 def fetch_manifest_data(correlation_ids):
     """Fetch processing statistics from manifest files stored in S3"""
     processing_stats = {
@@ -115,7 +115,7 @@ def fetch_manifest_data(correlation_ids):
     
     return processing_stats
 
-#    DynamoDB Retrieval   
+# DynamoDB Retrieval   
 def fetch_recent_analysis(correlation_id=None, limit=10):
     table = dynamodb.Table(DDB_TABLE)
     
@@ -152,7 +152,7 @@ def fetch_recent_analysis(correlation_id=None, limit=10):
     
     return items
 
-#    Helper Functions   
+# Helper Functions   
 def extract_insights_and_recommendations(items):
     """Extract insights and recommendations from the most recent DynamoDB item only"""
     if not items:
@@ -210,7 +210,7 @@ def format_executive_summary(items):
     # Only use the first one (which should be the most recent)
     return "\n".join(summaries[:1])  # Just take the most recent summary
 
-#    SES Email   
+# SES Email   
 
 def send_email(subject, body_text, body_html, retries=3, delay=2):
     if not SES_SENDER or not SES_RECIPIENTS:
@@ -243,22 +243,77 @@ def send_email(subject, body_text, body_html, retries=3, delay=2):
 
         
 
-#    Lambda Handler   
+# Lambda Handler   
 def lambda_handler(event, context):
-    correlation_id = event.get("correlation_id")  # optional filter
-    items = fetch_recent_analysis(correlation_id=correlation_id, limit=5)
+    """
+    Updated handler to properly handle EventBridge events from the analyzer
+    """
+    
+    # DEBUG: Log the incoming event structure
+    log("DEBUG", "notifier_event_received", 
+        event_keys=list(event.keys()),
+        event_source=event.get("source"),
+        detail_type=event.get("detail-type"))
+    
+    # Handle EventBridge event format from analyzer
+    correlation_id = None
+    
+    if "detail" in event and event.get("source") == "health.data.analyzer":
+        # EventBridge event from analyzer
+        correlation_id = event["detail"].get("correlation_id")
+        event_type = "eventbridge"
+        log("INFO", "received_eventbridge_event", 
+            correlation_id=correlation_id,
+            event_source=event.get("source"),
+            detail_type=event.get("detail-type"))
+    elif "correlation_id" in event:
+        # Direct invocation or manual test
+        correlation_id = event.get("correlation_id")
+        event_type = "direct"
+        log("INFO", "received_direct_event", correlation_id=correlation_id)
+    else:
+        # Fallback - no correlation_id provided
+        event_type = "fallback"
+        log("INFO", "received_fallback_event", 
+            message="No correlation_id found, processing recent analyses")
+    
+    if correlation_id:
+        # Process specific file only
+        items = fetch_recent_analysis(correlation_id=correlation_id, limit=1)
+        correlation_ids = [correlation_id]
+        scope_description = "Current file only"
+        
+        log("INFO", "processing_specific_correlation", 
+            correlation_id=correlation_id,
+            items_found=len(items),
+            event_type=event_type)
+    else:
+        # Process recent files (fallback for manual triggers)
+        items = fetch_recent_analysis(correlation_id=None, limit=5)
+        correlation_ids = [item.get("correlation_id") for item in items if item.get("correlation_id")]
+        scope_description = f"Last {len(correlation_ids)} processed files"
+        
+        log("INFO", "processing_recent_analyses_fallback", 
+            items_found=len(items),
+            correlation_ids_count=len(correlation_ids),
+            event_type=event_type)
 
+    # Validation check
     if not items:
-        log("INFO", "no_analysis_found", correlation_id=correlation_id)
+        log("INFO", "no_analysis_found", 
+            correlation_id=correlation_id,
+            event_type=event_type)
         return {"status": "no_data", "message": "No analysis data found"}
 
+    # Log processing scope
     log("INFO", "processing_recent_items", 
         item_count=len(items),
+        scope=scope_description,
+        event_type=event_type,
         newest_timestamp=items[0].get('analysis_timestamp') if items else None,
         oldest_timestamp=items[-1].get('analysis_timestamp') if items else None)
 
     # Get correlation IDs for fetching processing statistics
-    correlation_ids = [item.get("correlation_id") for item in items if item.get("correlation_id")]
     processing_stats = fetch_manifest_data(correlation_ids)
 
     # Aggregate row counts and anomalies from analysis results
@@ -283,6 +338,8 @@ def lambda_handler(event, context):
     executive_summary_html = str(executive_summary).replace("\n", "<br>")
 
     log("INFO", "email_data_prepared", 
+        scope=scope_description,
+        event_type=event_type,
         total_input_rows=processing_stats["total_input"],
         total_valid_rows=processing_stats["total_valid"], 
         total_rejected_rows=processing_stats["total_rejected"],
@@ -292,12 +349,12 @@ def lambda_handler(event, context):
         recommendations_count=len(recommendations),
         anomaly_types=len(sorted_anomalies))
 
-    # Email content
+    # Email content - updated subject to indicate scope
     subject = f"Health Data Analysis Report - {datetime.utcnow().strftime('%B %d, %Y')}"
     
     # Calculate data quality percentage
     data_quality_pct = (processing_stats["total_valid"] / processing_stats["total_input"] * 100) if processing_stats["total_input"] > 0 else 100
-    
+
     # Format content for email
     anomalies_text = "\n".join([f"  • {anomaly}: {count} occurrences" for anomaly, count in sorted_anomalies[:10]]) or "  • No anomalies detected"
     insights_text = "\n".join([f"  • {insight}" for insight in insights[:10]]) or "  • Continuing to monitor health patterns"
@@ -305,10 +362,10 @@ def lambda_handler(event, context):
 
     body_text = f"""Health Data Analysis Report
 Generated on: {datetime.utcnow().strftime('%B %d, %Y at %I:%M %p UTC')}
-Based on analysis from: {items[0].get('analysis_timestamp', 'Unknown') if items else 'Unknown'}
+Event Type: {event_type.title()}
 
 === DATA PROCESSING OVERVIEW ===
-Total Raw Records: {processing_stats['total_input']:,}
+Total Raw Records (this scope): {processing_stats['total_input']:,}
 Valid Records: {processing_stats['total_valid']:,}
 Rejected Records: {processing_stats['total_rejected']:,}
 
@@ -595,7 +652,7 @@ If you have concerns about any anomalies, please consult with a healthcare profe
         for item in items:
             try:
                 table.update_item(
-                    Key={"correlation_id": item["correlation_id"], "analysis_id": item["analysis_id"]},
+                    Key={"correlation_id": item["correlation_id"], "analysis_timestamp": item["analysis_timestamp"]},
                     UpdateExpression="SET notification_sent = :sent, notification_timestamp = :ts",
                     ExpressionAttributeValues={
                         ":sent": True,
@@ -604,10 +661,14 @@ If you have concerns about any anomalies, please consult with a healthcare profe
                 )
             except Exception as e:
                 log("WARN", "failed_to_update_notification_status", 
-                    correlation_id=item.get("correlation_id"), error=str(e))
+                    correlation_id=item.get("correlation_id"), 
+                    analysis_id=item.get("analysis_id"),
+                    error=str(e))
 
     return {
         "status": "success" if email_sent else "failed",
+        "event_type": event_type,
+        "scope": scope_description,
         "processing_stats": processing_stats,
         "total_analyzed_rows": total_analyzed_rows,
         "total_anomalies": total_anomalies,
