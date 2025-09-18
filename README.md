@@ -115,7 +115,24 @@ Eventbridge orchestrates the workflow. In a pipeline, after one Lambda finishes 
 Each lambda has minimal required permissions following principle of least privilege. For eg. notifier lambda is only allowed to get dynamodb data, create logs and get s3 bucket data. S3 bucket are encrypted using server side encryption which ensures data security. The lifecycle policy in S3 bucket ensures the data is retained for some amount of time.
 
 ### Error Handling & Retry Strategies
-- Lambda functions log structured JSON messages for success and error events.
+- Lambda functions log structured JSON messages for success and error events. For example:
+```
+{
+    "ts": "2025-09-18T05:08:35.757421Z",
+    "level": "INFO",
+    "message": "email_data_prepared",
+    "scope": "Current file only",
+    "event_type": "eventbridge",
+    "total_input_rows": 1000,
+    "total_valid_rows": 850,
+    "total_rejected_rows": 150,
+    "total_analyzed_rows": 850,
+    "total_anomalies": 402,
+    "insights_count": 5,
+    "recommendations_count": 5,
+    "anomaly_types": 15
+}
+```
 - Idempotency marker prevents re-analysis; Bedrock or DynamoDB errors logged.
 - Retry mechanism for sending email.
 - Metrics alarm are used for alert through email in case of lambda failures.
@@ -133,7 +150,10 @@ We have three branch: main, dev, uat. When we push changes to uat branch, dev is
 ![Cost Analysis](<screenshots/Screenshot from 2025-09-17 20-11-06.png>)
 
 ### Code Pipeline
-![alt text](<screenshots/image copy.png>)
+![Code Pipeline](<screenshots/image copy.png>)
+
+### Git Backsync
+![Git Backsync](<screenshots/image copy 2.png>)
 
 ### DynamoDB populated with data
 ![DynamoDB Result](<screenshots/Screenshot from 2025-09-17 18-30-45.png>)
