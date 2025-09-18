@@ -186,18 +186,20 @@ def analyze_with_llm(rows, anomalies):
     
     COST_PER_1K_TOKENS = 0.00006	  # USD
     
-    usage = payload.get("usage", {}) 
-    prompt_tokens = usage.get("promptTokens", 0)
-    completion_tokens = usage.get("completionTokens", 0)
-    total_tokens = usage.get("totalTokens", 0)
+    metrics = response.get("ResponseMetadata", {}).get("HTTPHeaders", {})
+    input_tokens = int(metrics.get("x-amzn-bedrock-input-token-count", 0))
+    output_tokens = int(metrics.get("x-amzn-bedrock-output-token-count", 0))
+    total_tokens = input_tokens + output_tokens
+
     estimated_cost = (total_tokens / 1000) * COST_PER_1K_TOKENS
 
-    log("INFO", "bedrock_usage", 
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
+    log("INFO", "bedrock_usage",
+        prompt_tokens=input_tokens,
+        completion_tokens=output_tokens,
         total_tokens=total_tokens,
         estimated_cost_usd=estimated_cost
     )
+
 
     result = json.loads(output_text)
     log("INFO", "llm_analysis_success", insights_count=len(result.get("insights", [])), recommendations_count=len(result.get("recommendations", [])))
