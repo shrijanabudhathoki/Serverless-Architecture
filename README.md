@@ -147,7 +147,18 @@ We have three branch: main, dev, uat. When we push changes to uat branch, dev is
 
 ### Cost Analysis of Bedrock Model
 - The model used  for LLM analysis is nova-lite the price of which is $0.00006 per 1000 input tokens.
-![Cost Analysis](<screenshots/Screenshot from 2025-09-17 20-11-06.png>)
+```
+{
+    "ts": "2025-09-18T08:06:33.814262Z",
+    "level": "INFO",
+    "message": "bedrock_usage",
+    "prompt_tokens": 2299,
+    "completion_tokens": 363,
+    "total_tokens": 2662,
+    "estimated_cost_usd": 0.00015972
+}
+```
+![Cost Analysis](<screenshots/image copy 3.png>)
 
 ### Code Pipeline
 ![Code Pipeline](<screenshots/image copy.png>)
